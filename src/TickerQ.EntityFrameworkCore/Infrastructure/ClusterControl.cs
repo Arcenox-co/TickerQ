@@ -48,7 +48,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         catch (DbUpdateException)
         {
             // A concurrent first heartbeat inserted the node. The next heartbeat refreshes it.
-            if (!await rows.AsNoTracking().AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey
+            if (!await rows.AsNoTracking().ExistsAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey
                     && x.NodeKey == node.NodeKey, cancellationToken).ConfigureAwait(false)) throw;
         }
     }
@@ -96,13 +96,13 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
     {
         using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var rows = session.Context.Set<TickerQControlCommandEntity>();
-        if (await rows.AsNoTracking().AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey
+        if (await rows.AsNoTracking().ExistsAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey
                 && x.Id == command.Id, cancellationToken).ConfigureAwait(false)) return true;
         rows.Add(ToEntity(command));
         try { await session.Context.SaveChangesAsync(cancellationToken).ConfigureAwait(false); return true; }
         catch (DbUpdateException)
         {
-            return await rows.AsNoTracking().AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey
+            return await rows.AsNoTracking().ExistsAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey
                 && x.Id == command.Id, cancellationToken).ConfigureAwait(false);
         }
     }

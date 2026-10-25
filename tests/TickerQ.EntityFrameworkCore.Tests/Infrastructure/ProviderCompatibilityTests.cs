@@ -151,6 +151,36 @@ public class ProviderCompatibilityTests
     }
 
     [Fact]
+    public void Oracle_model_stores_tickerq_booleans_as_number_1_for_every_server_version()
+    {
+        // The provider's default BOOLEAN only exists from 23ai; NUMBER(1) gets its 0/1 mapping (#798).
+        var model = DesignModel(b => b.UseOracle("User Id=u;Password=p;Data Source=localhost/FREEPDB1"));
+        var booleans = model.GetEntityTypes().SelectMany(e => e.GetProperties())
+            .Where(p => p.ClrType == typeof(bool) || p.ClrType == typeof(bool?))
+            .ToArray();
+
+        Assert.Contains(booleans, p => p.Name == nameof(CronTickerEntity.IsEnabled));
+        Assert.Contains(booleans, p => p.Name == nameof(TickerQNodeEntity.IsRunning));
+        Assert.All(booleans, p =>
+        {
+            Assert.Equal("NUMBER(1)", p.GetColumnType());
+            Assert.Equal("1", p.GetRelationalTypeMapping().GenerateSqlLiteral(true));
+        });
+    }
+
+    [Fact]
+    public void Oracle_boolean_columns_leave_the_host_applications_entities_alone()
+    {
+        using var context = new HostOracleContext();
+        var model = context.GetService<IDesignTimeModel>().Model;
+
+        Assert.Equal("NUMBER(1)", model.FindEntityType(typeof(TickerQNodeEntity))!
+            .FindProperty(nameof(TickerQNodeEntity.IsRunning))!.GetColumnType());
+        Assert.Equal("BOOLEAN", model.FindEntityType(typeof(HostEntity))!
+            .FindProperty(nameof(HostEntity.Flag))!.GetColumnType());
+    }
+
+    [Fact]
     public void MySql_model_keeps_investigation_index_keys_within_the_innodb_limit()
     {
         var model = DesignModel(b => b.UseMySQL("Server=localhost;Database=tickerq;User=u;Password=p"));
@@ -194,6 +224,25 @@ public class ProviderCompatibilityTests
         using var context = new TickerQDbContext(options);
         Assert.False(context.Database.HasPendingModelChanges(),
             "The sample's model snapshot is out of date. Regenerate it with dotnet ef migrations add.");
+    }
+
+    private sealed class HostEntity
+    {
+        public int Id { get; set; }
+        public bool Flag { get; set; }
+    }
+
+    private sealed class HostOracleContext : DbContext
+    {
+        protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+            => optionsBuilder.UseOracle("User Id=u;Password=p;Data Source=localhost/FREEPDB1");
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<HostEntity>();
+            modelBuilder.ApplyConfiguration(new TickerQ.EntityFrameworkCore.Configurations.TickerQNodeConfigurations());
+            TickerQ.EntityFrameworkCore.Configurations.TickerProviderModelConventions.Apply(modelBuilder, Database.ProviderName);
+        }
     }
 
     private static IModel DesignModel(Action<DbContextOptionsBuilder<TickerQDbContext>> configure)

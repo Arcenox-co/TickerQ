@@ -79,7 +79,7 @@ public sealed class RelationalRuntimeConformanceTests
             await WaitUntilAsync(host.Services, async db =>
                 await db.Set<TimeTickerEntity>().AsNoTracking().CountAsync(x => x.Status == TickerStatus.Done, timeout.Token) >= 3 &&
                 await db.Set<CronTickerOccurrenceEntity<CronTickerEntity>>().AsNoTracking()
-                    .AnyAsync(x => x.Status == TickerStatus.Done, timeout.Token), timeout.Token);
+                    .CountAsync(x => x.Status == TickerStatus.Done, timeout.Token) > 0, timeout.Token);
         }
         finally
         {

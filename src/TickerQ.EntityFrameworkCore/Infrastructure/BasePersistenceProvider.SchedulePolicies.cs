@@ -123,17 +123,17 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         var normalized = name.Trim();
         using var session = await DbContextLease<TDbContext>.CreateAsync(_serviceProvider, cancellationToken)
             .ConfigureAwait(false);
-        return await session.Context.Set<TTimeTicker>().AsNoTracking().AnyAsync(x =>
+        return await session.Context.Set<TTimeTicker>().AsNoTracking().ExistsAsync(x =>
                    x.ApplicationNamespaceKey == _runtimePartitionKey && x.SchedulePolicyName == normalized,
                    cancellationToken).ConfigureAwait(false) ||
-               await session.Context.Set<TCronTicker>().AsNoTracking().AnyAsync(x =>
+               await session.Context.Set<TCronTicker>().AsNoTracking().ExistsAsync(x =>
                    x.ApplicationNamespaceKey == _runtimePartitionKey && x.SchedulePolicyName == normalized,
                    cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<bool> PolicyNameExistsAsync(TDbContext context, string nameKey, Guid id,
         CancellationToken cancellationToken) => await context.Set<SchedulePolicyEntity>().AsNoTracking()
-        .AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+        .ExistsAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                        x.NameKey == nameKey && x.Id != id, cancellationToken).ConfigureAwait(false);
 
     private static SchedulePolicy ToPolicy(SchedulePolicyEntity row)

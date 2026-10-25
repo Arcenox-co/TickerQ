@@ -26,7 +26,7 @@ internal partial class TickerEfCorePersistenceProvider<TDbContext, TTimeTicker, 
                 .SingleOrDefaultAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == context.TickerId, cancellationToken);
             if (receipt == null) return CronChainDispatchResult.LostOwnership;
             if (receipt.ChainRootId.HasValue) return CronChainDispatchResult.AlreadyCreated;
-            if (!await read.Set<TCronTicker>().AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+            if (!await read.Set<TCronTicker>().ExistsAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                 x.Id == receipt.CronTickerId && x.Chain != null, cancellationToken)) return CronChainDispatchResult.NotConfigured;
         }
         return await ExecuteTimeTickerGraphMutationAsync(true, CronChainDispatchResult.LostOwnership, async (db, ct) =>
@@ -43,7 +43,7 @@ internal partial class TickerEfCorePersistenceProvider<TDbContext, TTimeTicker, 
                 occurrence.DefinitionRevision != cron.DefinitionRevision)
                 return CronChainDispatchResult.LostOwnership;
             var skip = cron.SkipIfAlreadyRunning &&
-                await db.Set<TTimeTicker>().AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                await db.Set<TTimeTicker>().ExistsAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                     x.OriginCronTickerId == cron.Id &&
                     (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued || x.Status == TickerStatus.InProgress), ct);
             var now = _clock.UtcNow;

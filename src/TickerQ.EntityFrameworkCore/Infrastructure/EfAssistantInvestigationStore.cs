@@ -46,7 +46,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             // Most duplicate attempts come from later automatic sweeps, not a race. Avoid using
             // a database constraint violation as the normal control path (and avoid its error log).
             // The unique index and the catch below remain the final guard for concurrent nodes.
-            if (await Investigations.AsNoTracking().AnyAsync(x =>
+            if (await Investigations.AsNoTracking().ExistsAsync(x =>
                 x.ApplicationNamespace == investigation.ApplicationNamespace &&
                 x.ExecutionId == investigation.ExecutionId, cancellationToken))
                 return null;
@@ -89,7 +89,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             catch (DbUpdateException)
             {
                 _db.Entry(entity).State = EntityState.Detached;
-                if (await Investigations.AsNoTracking().AnyAsync(x =>
+                if (await Investigations.AsNoTracking().ExistsAsync(x =>
                     x.ApplicationNamespace == entity.ApplicationNamespace &&
                     x.ExecutionId == entity.ExecutionId, cancellationToken))
                     return null;
@@ -122,7 +122,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     .SetProperty(x => x.UpdatedAt, now), cancellationToken);
             if (replaced == 1) return true;
 
-            if (await Leases.AsNoTracking().AnyAsync(x =>
+            if (await Leases.AsNoTracking().ExistsAsync(x =>
                     x.ApplicationNamespace == applicationNamespace &&
                     x.EvidenceFingerprint == evidenceFingerprint, cancellationToken))
                 return false;
@@ -145,7 +145,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             catch (DbUpdateException)
             {
                 _db.Entry(entity).State = EntityState.Detached;
-                if (await Leases.AsNoTracking().AnyAsync(x =>
+                if (await Leases.AsNoTracking().ExistsAsync(x =>
                         x.ApplicationNamespace == applicationNamespace &&
                         x.EvidenceFingerprint == evidenceFingerprint, cancellationToken))
                     return false;
@@ -218,7 +218,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     catch (DbUpdateException)
                     {
                         _db.Entry(created).State = EntityState.Detached;
-                        if (!await Budgets.AsNoTracking().AnyAsync(x =>
+                        if (!await Budgets.AsNoTracking().ExistsAsync(x =>
                                 x.ApplicationNamespace == applicationNamespace, cancellationToken))
                             throw;
                         await Task.Yield();

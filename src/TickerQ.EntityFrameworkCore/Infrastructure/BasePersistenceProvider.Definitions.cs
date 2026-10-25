@@ -210,7 +210,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         Guid? excludedId, CancellationToken cancellationToken)
     {
         if (candidate.Kind != SavedTickerDefinitionKind.Template) return;
-        var exists = await context.Set<TickerQDefinitionEntity>().AsNoTracking().AnyAsync(row =>
+        var exists = await context.Set<TickerQDefinitionEntity>().AsNoTracking().ExistsAsync(row =>
             row.ApplicationNamespaceKey == _runtimePartitionKey && row.NameKey == candidate.NameKey &&
             (!excludedId.HasValue || row.Id != excludedId.Value), cancellationToken).ConfigureAwait(false);
         if (exists) throw new DuplicateSavedTickerDefinitionNameException(candidate.Name);

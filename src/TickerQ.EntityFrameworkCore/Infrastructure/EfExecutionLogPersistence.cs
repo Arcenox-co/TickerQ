@@ -20,14 +20,14 @@ internal sealed class EfExecutionLogPersistence<TContext>(IServiceProvider servi
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (await UpdateAsync(db, row, cancellationToken) > 0) continue;
-            if (await db.Set<ExecutionLogArchive>().AnyAsync(x => x.Id == row.Id, cancellationToken)) continue;
+            if (await db.Set<ExecutionLogArchive>().ExistsAsync(x => x.Id == row.Id, cancellationToken)) continue;
             db.Add(row);
             try { await db.SaveChangesAsync(cancellationToken); }
             catch (DbUpdateException)
             {
                 db.Entry(row).State = EntityState.Detached;
                 // Another node may have inserted this tail. Never replace a newer snapshot.
-                if (!await db.Set<ExecutionLogArchive>().AnyAsync(x => x.Id == row.Id, cancellationToken)) throw;
+                if (!await db.Set<ExecutionLogArchive>().ExistsAsync(x => x.Id == row.Id, cancellationToken)) throw;
                 await UpdateAsync(db, row, cancellationToken);
             }
             db.Entry(row).State = EntityState.Detached;

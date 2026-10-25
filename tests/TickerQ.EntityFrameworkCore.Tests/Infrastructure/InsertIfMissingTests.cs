@@ -150,6 +150,7 @@ public class InsertIfMissingTests
     [InlineData("MySql.EntityFrameworkCore", "MySql")]
     [InlineData("MySql.Data.EntityFrameworkCore", "MySql")]
     [InlineData("Pomelo.EntityFrameworkCore.MySql", "MySql")]
+    [InlineData("Microting.EntityFrameworkCore.MySql", "MySql")]
     [InlineData("Microsoft.EntityFrameworkCore.SqlServer", "SqlServer")]
     [InlineData("Oracle.EntityFrameworkCore", "Oracle")]
     public void Selects_the_dialect_by_exact_provider_name(string providerName, string expectedDialect)

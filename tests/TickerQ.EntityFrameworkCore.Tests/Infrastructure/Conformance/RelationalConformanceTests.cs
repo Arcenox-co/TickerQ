@@ -263,7 +263,8 @@ public sealed class RelationalConformanceTests
         var column = sql.DelimitIdentifier("SeedKey");
         yield return target switch
         {
-            RelationalConformanceTarget.MySql or RelationalConformanceTarget.MariaDb => $"DROP INDEX {index} ON {table}",
+            RelationalConformanceTarget.MySql or RelationalConformanceTarget.MariaDb
+                or RelationalConformanceTarget.MariaDbMicroting => $"DROP INDEX {index} ON {table}",
             RelationalConformanceTarget.SqlServer => $"DROP INDEX {index} ON {table}",
             RelationalConformanceTarget.CockroachDb => $"DROP INDEX {qualifiedIndex} CASCADE",
             _ => $"DROP INDEX {qualifiedIndex}",

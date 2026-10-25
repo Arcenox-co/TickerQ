@@ -295,7 +295,7 @@ public sealed class EfCoreDataMigrationPipeline
         await using var transaction = await context.Database
             .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         var metadataSet = context.Set<TickerQStoreMetadata>();
-        if (!await metadataSet.AsNoTracking().AnyAsync(
+        if (!await metadataSet.AsNoTracking().ExistsAsync(
                 x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                      x.Id == TickerQStoreMetadata.TimeTickerGraphMutationSentinelId,
                 cancellationToken).ConfigureAwait(false))

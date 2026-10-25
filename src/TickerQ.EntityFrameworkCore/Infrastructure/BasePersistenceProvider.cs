@@ -68,7 +68,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         catch (DbUpdateException)
         {
             // Another administrator/replica may have inserted the singleton first.
-            if (await rows.AsNoTracking().AnyAsync(x => x.ApplicationNamespaceKey == key, cancellationToken).ConfigureAwait(false)) return false;
+            if (await rows.AsNoTracking().ExistsAsync(x => x.ApplicationNamespaceKey == key, cancellationToken).ConfigureAwait(false)) return false;
             throw;
         }
     }
@@ -274,7 +274,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         // This indexed predicate read and adoption's read/insert run under Serializable transactions.
         // The absent-row range is therefore fenced during first adoption; once inserted, the durable
         // tombstone rejects every later legacy creation/publication attempt.
-        return !await dbContext.Set<TickerQStoreMetadata>().AsNoTracking().AnyAsync(
+        return !await dbContext.Set<TickerQStoreMetadata>().AsNoTracking().ExistsAsync(
             x => x.ApplicationNamespaceKey == TickerQRuntimePartition.LegacyGlobal.StorageKey &&
                  x.Id == TickerQStoreMetadata.LegacyRuntimeAdoptionId,
             cancellationToken).ConfigureAwait(false);
@@ -381,7 +381,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         TDbContext dbContext, CancellationToken cancellationToken)
     {
         var metadata = dbContext.Set<TickerQStoreMetadata>();
-        if (!await metadata.AsNoTracking().AnyAsync(
+        if (!await metadata.AsNoTracking().ExistsAsync(
                 x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                      x.Id == TickerQStoreMetadata.TimeTickerGraphMutationSentinelId,
                 cancellationToken).ConfigureAwait(false))
@@ -478,7 +478,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         // A configured scheduler is fail-closed until its immutable construction-bound epoch has
         // been activated. Unbound providers and queue-only producers retain rolling-upgrade
         // compatibility with absent/Pending metadata.
-        if (!await metadata.AsNoTracking().AnyAsync(
+        if (!await metadata.AsNoTracking().ExistsAsync(
                 x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == scopeKey, cancellationToken)
                 .ConfigureAwait(false))
         {
@@ -1919,7 +1919,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         var hasDeeper = await context.AsNoTracking()
             .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ExecutionTime == null && x.ParentId.HasValue)
             .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(leafIds, x => x.ParentId.Value))
-            .AnyAsync(cancellationToken)
+            .ExistsAsync(cancellationToken)
             .ConfigureAwait(false);
         if (!hasDeeper)
             return;
@@ -2051,7 +2051,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         var hasDeeper = await context.AsNoTracking()
             .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ParentId.HasValue)
             .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(leafIds, x => x.ParentId.Value))
-            .AnyAsync(cancellationToken)
+            .ExistsAsync(cancellationToken)
             .ConfigureAwait(false);
         if (!hasDeeper)
             return;
@@ -2780,7 +2780,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             // Avoid compiling provider-specific navigation updates when this partition has no
             // occurrences. Some EF providers cannot translate the empty-work update shape.
             if (!await context.AsNoTracking()
-                    .AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey, ct)
+                    .ExistsAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey, ct)
                     .ConfigureAwait(false))
                 return result;
 
@@ -2939,7 +2939,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         if (item.NextCronOccurrence is null)
         {
             var isCurrentDefinition = await dbContext.Set<TCronTicker>().AsNoTracking()
-                .AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                .ExistsAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                                x.Id == item.Id && x.DefinitionRevision == item.DefinitionRevision,
                     cancellationToken).ConfigureAwait(false);
             if (!isCurrentDefinition) return null;
@@ -3238,7 +3238,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         {
             if (!lease.AcquisitionToken.HasValue)
                 continue;
-            if (await dbContext.Set<TTimeTicker>().AsNoTracking().AnyAsync(
+            if (await dbContext.Set<TTimeTicker>().AsNoTracking().ExistsAsync(
                     x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                          x.Id == lease.TickerId && x.LockHolder == _lockHolder &&
                          x.Status == TickerStatus.InProgress && x.AcquisitionToken == lease.AcquisitionToken,
@@ -3250,7 +3250,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         {
             if (!lease.AcquisitionToken.HasValue)
                 continue;
-            if (await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>().AsNoTracking().AnyAsync(
+            if (await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>().AsNoTracking().ExistsAsync(
                     x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                          x.Id == lease.TickerId && x.LockHolder == _lockHolder &&
                          x.Status == TickerStatus.InProgress && x.AcquisitionToken == lease.AcquisitionToken,
@@ -3320,7 +3320,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
 
         var hasCronOccurrences = await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
             .AsNoTracking()
-            .AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey, cancellationToken)
+            .ExistsAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey, cancellationToken)
             .ConfigureAwait(false);
         if (hasCronOccurrences)
         {
