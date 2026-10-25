@@ -65,11 +65,18 @@ jobs:
           }
 
           artifacts=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100")
-          nupkgs_count=$(jq '[.artifacts[] | select(.name == "nupkgs" and .expired == false)] | length' <<<"$artifacts")
+          # One release publishes every .NET line: exactly one package artifact per line, and one npm package.
+          for line in 8 9 10 11; do
+            nupkgs_count=$(jq --arg name "nupkgs-net${line}" \
+              '[.artifacts[] | select(.name == $name and .expired == false)] | length' <<<"$artifacts")
+            [[ "$nupkgs_count" == "1" ]] || {
+              echo "expected one unexpired nupkgs-net${line} artifact; found ${nupkgs_count}" >&2
+              exit 1
+            }
+          done
           npm_count=$(jq '[.artifacts[] | select(.name == "npm-package" and .expired == false)] | length' <<<"$artifacts")
-
-          [[ "$nupkgs_count" == "1" && "$npm_count" == "1" ]] || {
-            echo "expected one unexpired nupkgs and npm-package artifact; found ${nupkgs_count} and ${npm_count}" >&2
+          [[ "$npm_count" == "1" ]] || {
+            echo "expected one unexpired npm-package artifact; found ${npm_count}" >&2
             exit 1
           }
 
@@ -103,7 +110,9 @@ jobs:
           RUN_ID: ${{ needs.authenticate.outputs.run_id }}
         run: |
           set -euo pipefail
-          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name nupkgs --dir nupkgs
+          for line in 8 9 10 11; do
+            gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name "nupkgs-net${line}" --dir "nupkgs/net${line}"
+          done
           gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name npm-package --dir npm-package
 
       - name: Derive immutable artifact versions
@@ -118,27 +127,36 @@ jobs:
           import zipfile
           from pathlib import Path
 
-          nuget_versions = set()
-          for path in Path("nupkgs").glob("*.nupkg"):
-              with zipfile.ZipFile(path) as archive:
-                  nuspecs = [name for name in archive.namelist() if name.lower().endswith(".nuspec")]
-                  if len(nuspecs) != 1:
-                      raise SystemExit(f"{path}: expected exactly one nuspec")
-                  root = ET.fromstring(archive.read(nuspecs[0]))
-                  version = root.findtext(".//{*}metadata/{*}version")
-                  if not version:
-                      raise SystemExit(f"{path}: missing package version")
-                  nuget_versions.add(version.strip())
-          if len(nuget_versions) != 1:
-              raise SystemExit(f"expected one NuGet version, found {sorted(nuget_versions)}")
-          nuget_version = next(iter(nuget_versions))
           semver = re.compile(
               r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
               r"(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?"
               r"(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$"
           )
-          if semver.fullmatch(nuget_version) is None:
-              raise SystemExit(f"unsafe or invalid NuGet version {nuget_version!r}")
+          # Each .NET line is one NuGet version whose major is the line (8.5.0, 9.5.0, ...), and every line
+          # shares the same minor, patch, and prerelease label.
+          nuget_by_line = {}
+          for line in ("8", "9", "10", "11"):
+              nuget_versions = set()
+              for path in Path("nupkgs", f"net{line}").glob("*.nupkg"):
+                  with zipfile.ZipFile(path) as archive:
+                      nuspecs = [name for name in archive.namelist() if name.lower().endswith(".nuspec")]
+                      if len(nuspecs) != 1:
+                          raise SystemExit(f"{path}: expected exactly one nuspec")
+                      root = ET.fromstring(archive.read(nuspecs[0]))
+                      version = root.findtext(".//{*}metadata/{*}version")
+                      if not version:
+                          raise SystemExit(f"{path}: missing package version")
+                      nuget_versions.add(version.strip())
+              if len(nuget_versions) != 1:
+                  raise SystemExit(f"expected one NuGet version for .NET {line}, found {sorted(nuget_versions)}")
+              nuget_version = next(iter(nuget_versions))
+              if semver.fullmatch(nuget_version) is None:
+                  raise SystemExit(f"unsafe or invalid NuGet version {nuget_version!r}")
+              if nuget_version.split(".", 1)[0] != line:
+                  raise SystemExit(f".NET {line} artifacts carry version {nuget_version!r}")
+              nuget_by_line[line] = nuget_version
+          if len({version.split(".", 1)[1] for version in nuget_by_line.values()}) != 1:
+              raise SystemExit(f"the .NET lines disagree on minor/patch/label: {nuget_by_line}")
 
           npm_archives = list(Path("npm-package").glob("*.tgz"))
           if len(npm_archives) != 1:
@@ -163,7 +181,8 @@ jobs:
               raise SystemExit(f"unsafe npm archive name {npm_archive.name!r}")
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"nuget={nuget_version}\n")
+              for line, nuget_version in nuget_by_line.items():
+                  output.write(f"nuget_{line}={nuget_version}\n")
               output.write(f"npm={npm_version}\n")
               output.write(f"npm_archive={npm_archive.as_posix()}\n")
           PY
@@ -177,24 +196,34 @@ jobs:
 
       - name: Validate exact NuGet artifact set
         env:
-          NUGET_VERSION: ${{ steps.versions.outputs.nuget }}
-          SOURCE_SHA: ${{ needs.authenticate.outputs.source_sha }}
-        run: |
-          python3 scripts/validate-package-licenses.py \
-            --directory ./nupkgs \
-            --version "$NUGET_VERSION" \
-            --commercial-license release-source/LICENSE.md \
-            --third-party-notices release-source/THIRD-PARTY-NOTICES.md \
-            --dashboard-third-party-notices release-source/src/TickerQ.Dashboard/DASHBOARD-THIRD-PARTY-NOTICES.md \
-            --repository-commit "$SOURCE_SHA"
-
-      - name: Verify existing NuGet artifacts or stage missing packages
-        env:
-          NUGET_VERSION: ${{ steps.versions.outputs.nuget }}
+          NUGET_8: ${{ steps.versions.outputs.nuget_8 }}
+          NUGET_9: ${{ steps.versions.outputs.nuget_9 }}
+          NUGET_10: ${{ steps.versions.outputs.nuget_10 }}
+          NUGET_11: ${{ steps.versions.outputs.nuget_11 }}
           SOURCE_SHA: ${{ needs.authenticate.outputs.source_sha }}
         run: |
           set -euo pipefail
-          mkdir -p registry-nupkgs missing-nupkgs
+          for line in 8 9 10 11; do
+            version_name="NUGET_${line}"
+            python3 scripts/validate-package-licenses.py \
+              --directory "./nupkgs/net${line}" \
+              --version "${!version_name}" \
+              --commercial-license release-source/LICENSE.md \
+              --third-party-notices release-source/THIRD-PARTY-NOTICES.md \
+              --dashboard-third-party-notices release-source/src/TickerQ.Dashboard/DASHBOARD-THIRD-PARTY-NOTICES.md \
+              --repository-commit "$SOURCE_SHA"
+          done
+
+      - name: Verify existing NuGet artifacts or stage missing packages
+        env:
+          NUGET_8: ${{ steps.versions.outputs.nuget_8 }}
+          NUGET_9: ${{ steps.versions.outputs.nuget_9 }}
+          NUGET_10: ${{ steps.versions.outputs.nuget_10 }}
+          NUGET_11: ${{ steps.versions.outputs.nuget_11 }}
+          SOURCE_SHA: ${{ needs.authenticate.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p missing-nupkgs
           package_ids=(
             TickerQ
             TickerQ.Dashboard
@@ -209,41 +238,47 @@ jobs:
             TickerQ.RemoteExecutor
           )
 
-          for package_id in "${package_ids[@]}"; do
-            local_package="nupkgs/${package_id}.${NUGET_VERSION}.nupkg"
-            registry_package="registry-nupkgs/${package_id}.${NUGET_VERSION}.nupkg"
-            lower_id=$(printf '%s' "$package_id" | tr '[:upper:]' '[:lower:]')
-            lower_version=$(printf '%s' "$NUGET_VERSION" | tr '[:upper:]' '[:lower:]')
-            package_url="https://api.nuget.org/v3-flatcontainer/${lower_id}/${lower_version}/${lower_id}.${lower_version}.nupkg"
-            status=$(curl -sS -L -o "$registry_package" -w "%{http_code}" "$package_url")
+          for line in 8 9 10 11; do
+            version_name="NUGET_${line}"
+            NUGET_VERSION="${!version_name}"
+            mkdir -p "registry-nupkgs/net${line}"
 
-            if [ "$status" = "200" ]; then
-              python3 scripts/compare-nuget-packages.py \
-                --local "$local_package" \
-                --registry "$registry_package"
-            elif [ "$status" = "404" ]; then
-              rm -f "$registry_package"
-              cp "$local_package" "$registry_package"
-              cp "$local_package" "missing-nupkgs/"
-              # dotnet nuget push publishes a .snupkg found next to its .nupkg to the symbol server.
-              local_symbols="nupkgs/${package_id}.${NUGET_VERSION}.snupkg"
-              if [ -f "$local_symbols" ]; then
-                cp "$local_symbols" "missing-nupkgs/"
+            for package_id in "${package_ids[@]}"; do
+              local_package="nupkgs/net${line}/${package_id}.${NUGET_VERSION}.nupkg"
+              registry_package="registry-nupkgs/net${line}/${package_id}.${NUGET_VERSION}.nupkg"
+              lower_id=$(printf '%s' "$package_id" | tr '[:upper:]' '[:lower:]')
+              lower_version=$(printf '%s' "$NUGET_VERSION" | tr '[:upper:]' '[:lower:]')
+              package_url="https://api.nuget.org/v3-flatcontainer/${lower_id}/${lower_version}/${lower_id}.${lower_version}.nupkg"
+              status=$(curl -sS -L -o "$registry_package" -w "%{http_code}" "$package_url")
+
+              if [ "$status" = "200" ]; then
+                python3 scripts/compare-nuget-packages.py \
+                  --local "$local_package" \
+                  --registry "$registry_package"
+              elif [ "$status" = "404" ]; then
+                rm -f "$registry_package"
+                cp "$local_package" "$registry_package"
+                cp "$local_package" "missing-nupkgs/"
+                # dotnet nuget push publishes a .snupkg found next to its .nupkg to the symbol server.
+                local_symbols="nupkgs/net${line}/${package_id}.${NUGET_VERSION}.snupkg"
+                if [ -f "$local_symbols" ]; then
+                  cp "$local_symbols" "missing-nupkgs/"
+                fi
+              else
+                echo "NuGet returned HTTP $status while checking $package_id@$NUGET_VERSION" >&2
+                exit 1
               fi
-            else
-              echo "NuGet returned HTTP $status while checking $package_id@$NUGET_VERSION" >&2
-              exit 1
-            fi
-          done
+            done
 
-          python3 scripts/validate-package-licenses.py \
-            --directory ./registry-nupkgs \
-            --no-symbol-packages \
-            --version "$NUGET_VERSION" \
-            --commercial-license release-source/LICENSE.md \
-            --third-party-notices release-source/THIRD-PARTY-NOTICES.md \
-            --dashboard-third-party-notices release-source/src/TickerQ.Dashboard/DASHBOARD-THIRD-PARTY-NOTICES.md \
-            --repository-commit "$SOURCE_SHA"
+            python3 scripts/validate-package-licenses.py \
+              --directory "./registry-nupkgs/net${line}" \
+              --no-symbol-packages \
+              --version "$NUGET_VERSION" \
+              --commercial-license release-source/LICENSE.md \
+              --third-party-notices release-source/THIRD-PARTY-NOTICES.md \
+              --dashboard-third-party-notices release-source/src/TickerQ.Dashboard/DASHBOARD-THIRD-PARTY-NOTICES.md \
+              --repository-commit "$SOURCE_SHA"
+          done
 
       - name: Validate exact npm artifact
         env:
