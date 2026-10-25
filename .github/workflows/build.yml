@@ -165,26 +165,6 @@ jobs:
           dotnet build tests/TickerQ.Caching.StackExchangeRedis.Tests/TickerQ.Caching.StackExchangeRedis.Tests.csproj --configuration Release $LINE
           dotnet build tests/TickerQ.SourceGenerator.Tests/TickerQ.SourceGenerator.Tests.csproj --configuration Release $LINE
 
-      # The npm SDK is not .NET-line specific: it is tested, packed, and uploaded once.
-      - name: Run Node SDK tests
-        if: matrix.dotnet == 10
-        working-directory: hub/sdks/node
-        run: |
-          npm ci --include=dev --ignore-scripts --no-audit --no-fund
-          npm test
-
-      - name: Pack and validate Node SDK licensing
-        if: matrix.dotnet == 10
-        run: |
-          mkdir -p ./npm-packages
-          npm pack ./hub/sdks/node --pack-destination ./npm-packages
-          NODE_VERSION=$(node -p "require('./hub/sdks/node/package.json').version")
-          python3 scripts/validate-node-package.py \
-            --archive "./npm-packages/tickerq-sdk-${NODE_VERSION}.tgz" \
-            --version "$NODE_VERSION" \
-            --commercial-license ./LICENSE.md \
-            --third-party-notices ./THIRD-PARTY-NOTICES.md
-
       - name: Run .NET tests
         run: |
           dotnet test tests/TickerQ.Tests/ --configuration Release --no-build $LINE
@@ -243,14 +223,6 @@ jobs:
           path: |
             ./nupkgs/*.nupkg
             ./nupkgs/*.snupkg
-          if-no-files-found: error
-
-      - name: Upload validated npm package artifact
-        if: matrix.dotnet == 10
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: npm-package
-          path: ./npm-packages/*.tgz
           if-no-files-found: error
 
   mongo-verify:

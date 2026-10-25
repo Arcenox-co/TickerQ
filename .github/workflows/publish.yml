@@ -65,7 +65,7 @@ jobs:
           }
 
           artifacts=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100")
-          # One release publishes every .NET line: exactly one package artifact per line, and one npm package.
+          # One release publishes every .NET line: exactly one package artifact per line.
           for line in 8 9 10 11; do
             nupkgs_count=$(jq --arg name "nupkgs-net${line}" \
               '[.artifacts[] | select(.name == $name and .expired == false)] | length' <<<"$artifacts")
@@ -74,11 +74,6 @@ jobs:
               exit 1
             }
           done
-          npm_count=$(jq '[.artifacts[] | select(.name == "npm-package" and .expired == false)] | length' <<<"$artifacts")
-          [[ "$npm_count" == "1" ]] || {
-            echo "expected one unexpired npm-package artifact; found ${npm_count}" >&2
-            exit 1
-          }
 
           {
             echo "run_id=$RUN_ID"
@@ -113,16 +108,13 @@ jobs:
           for line in 8 9 10 11; do
             gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name "nupkgs-net${line}" --dir "nupkgs/net${line}"
           done
-          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name npm-package --dir npm-package
 
       - name: Derive immutable artifact versions
         id: versions
         run: |
           python3 - <<'PY'
-          import json
           import os
           import re
-          import tarfile
           import xml.etree.ElementTree as ET
           import zipfile
           from pathlib import Path
@@ -158,33 +150,9 @@ jobs:
           if len({version.split(".", 1)[1] for version in nuget_by_line.values()}) != 1:
               raise SystemExit(f"the .NET lines disagree on minor/patch/label: {nuget_by_line}")
 
-          npm_archives = list(Path("npm-package").glob("*.tgz"))
-          if len(npm_archives) != 1:
-              raise SystemExit(f"expected one npm tarball, found {len(npm_archives)}")
-          with tarfile.open(npm_archives[0], "r:gz") as archive:
-              package_file = archive.extractfile("package/package.json")
-              if package_file is None:
-                  raise SystemExit("npm tarball has no package/package.json")
-              npm_version = json.load(package_file).get("version")
-          if not isinstance(npm_version, str) or not npm_version:
-              raise SystemExit("npm package version is missing")
-          if semver.fullmatch(npm_version) is None:
-              raise SystemExit(f"unsafe or invalid npm version {npm_version!r}")
-          npm_archive_input = npm_archives[0]
-          npm_root = Path("npm-package").resolve()
-          if npm_archive_input.is_symlink() or not npm_archive_input.is_file():
-              raise SystemExit("npm archive must be a regular file")
-          npm_archive = npm_archive_input.resolve()
-          if npm_archive.parent != npm_root:
-              raise SystemExit(f"npm archive escapes artifact directory: {npm_archive}")
-          if re.fullmatch(r"[0-9A-Za-z._-]+\.tgz", npm_archive.name) is None:
-              raise SystemExit(f"unsafe npm archive name {npm_archive.name!r}")
-
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               for line, nuget_version in nuget_by_line.items():
                   output.write(f"nuget_{line}={nuget_version}\n")
-              output.write(f"npm={npm_version}\n")
-              output.write(f"npm_archive={npm_archive.as_posix()}\n")
           PY
 
       - name: Validate public Version 1.0 terms and pinned PDF digest
@@ -278,56 +246,11 @@ jobs:
               --repository-commit "$SOURCE_SHA"
           done
 
-      - name: Validate exact npm artifact
-        env:
-          NPM_ARCHIVE: ${{ steps.versions.outputs.npm_archive }}
-          NPM_VERSION: ${{ steps.versions.outputs.npm }}
-        run: |
-          python3 scripts/validate-node-package.py \
-            --archive "$NPM_ARCHIVE" \
-            --version "$NPM_VERSION" \
-            --commercial-license release-source/LICENSE.md \
-            --third-party-notices release-source/THIRD-PARTY-NOTICES.md
-
-      - name: Configure package registries
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
-
       - name: Verify publication credentials are configured
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           test -n "$NUGET_API_KEY" || { echo "NUGET_API_KEY is not configured" >&2; exit 1; }
-          test -n "$NODE_AUTH_TOKEN" || { echo "NPM_TOKEN is not configured" >&2; exit 1; }
-
-      - name: Publish or verify exact npm artifact
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_ARCHIVE: ${{ steps.versions.outputs.npm_archive }}
-          NPM_VERSION: ${{ steps.versions.outputs.npm }}
-        run: |
-          set -euo pipefail
-          status=$(curl -sS -o npm-version.json -w "%{http_code}" \
-            "https://registry.npmjs.org/@tickerq%2fsdk/$NPM_VERSION")
-          if [ "$status" = "404" ]; then
-            npm publish "$NPM_ARCHIVE" \
-              --registry https://registry.npmjs.org \
-              --access public
-          elif [ "$status" = "200" ]; then
-            expected=$(jq -r '.dist.integrity // empty' npm-version.json)
-            actual="sha512-$(openssl dgst -sha512 -binary "$NPM_ARCHIVE" | openssl base64 -A)"
-            [ -n "$expected" ] && [ "$actual" = "$expected" ] || {
-              echo "npm already contains @tickerq/sdk@$NPM_VERSION with a different artifact digest" >&2
-              exit 1
-            }
-            echo "@tickerq/sdk@$NPM_VERSION already exists with the exact artifact digest; skipping."
-          else
-            echo "npm registry returned HTTP $status while checking @tickerq/sdk@$NPM_VERSION" >&2
-            exit 1
-          fi
 
       - name: Publish missing NuGet artifacts
         env:

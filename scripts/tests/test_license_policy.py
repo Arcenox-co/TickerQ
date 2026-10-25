@@ -105,18 +105,19 @@ class LicensePolicyTests(unittest.TestCase):
         build_workflow = (ROOT / ".github" / "workflows" / "build.yml").read_text()
         publish_workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text()
 
-        self.assertIn("name: npm-package", build_workflow)
         self.assertIn("npm ci --include=dev", build_workflow)
+        # The npm SDK (@tickerq/sdk) is not released.
+        self.assertNotIn("npm-package", build_workflow)
+        self.assertNotIn("npm-package", publish_workflow)
+        self.assertNotIn("npm publish", publish_workflow)
+        self.assertNotIn("NPM_TOKEN", publish_workflow)
         self.assertIn("workflow_run:", publish_workflow)
         self.assertNotIn("workflow_dispatch:", publish_workflow)
         self.assertIn("github.event.workflow_run.id", publish_workflow)
         self.assertIn(".head_repository.full_name", publish_workflow)
         self.assertIn("environment: production-publish", publish_workflow)
-        self.assertIn("--name npm-package", publish_workflow)
         self.assertIn("compare-nuget-packages.py", publish_workflow)
         self.assertIn("unsafe or invalid NuGet version", publish_workflow)
-        self.assertIn("npm_archive = npm_archive_input.resolve()", publish_workflow)
-        self.assertIn("--registry https://registry.npmjs.org", publish_workflow)
         self.assertIn("continue-on-error: true", build_workflow)
         self.assertIn("./nupkgs/*.nupkg", build_workflow)
         self.assertIn("./nupkgs/*.snupkg", build_workflow)
@@ -481,13 +482,11 @@ class LicensePolicyTests(unittest.TestCase):
                 fetch.assert_not_called()
                 self.assertIn("public-master-v1.0 PDF SHA-256 is not published", errors.getvalue())
 
-    def test_nuget_and_npm_publication_require_the_same_agreement_revision(self) -> None:
+    def test_nuget_publication_requires_the_current_agreement_revision(self) -> None:
         workflow = (ROOT / ".github/workflows/publish.yml").read_text()
-        package = json.loads((ROOT / "hub/sdks/node/package.json").read_text())
-        for command in (workflow, package["scripts"]["verify:public-terms"]):
-            self.assertIn("--expected-version public-master-v1.0", command)
-            self.assertIn("licenses/public-master-v1.0.sha256", command)
-            self.assertNotIn("public-master-v0.9", command)
+        self.assertIn("--expected-version public-master-v1.0", workflow)
+        self.assertIn("licenses/public-master-v1.0.sha256", workflow)
+        self.assertNotIn("public-master-v0.9", workflow)
 
     def test_validator_rejects_duplicate_zip_members(self) -> None:
         validator = load_validator()
