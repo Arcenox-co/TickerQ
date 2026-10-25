@@ -4,8 +4,6 @@ on:
   pull_request:
     branches:
       - main
-      - net8
-      - net9
       - experiment/reliability-observability-bulk
 
 permissions:
@@ -123,9 +121,8 @@ jobs:
           dotnet build tests/TickerQ.MongoDB.Tests/TickerQ.MongoDB.Tests.csproj --configuration Release $LINE
           dotnet build tests/TickerQ.SourceGenerator.Tests/TickerQ.SourceGenerator.Tests.csproj --configuration Release $LINE
 
-      # The hub SDK and remote executor are built and released on the .NET 10 line only.
+      # The hub SDK and remote executor are released for every .NET line, like the other packages.
       - name: Build hub projects
-        if: matrix.dotnet == 10
         run: |
           dotnet build hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj --configuration Release $LINE
           dotnet build hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj --configuration Release $LINE
