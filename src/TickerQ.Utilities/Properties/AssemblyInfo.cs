@@ -7,6 +7,7 @@
 [assembly: InternalsVisibleTo("TickerQ.Integrations")]
 [assembly: InternalsVisibleTo("TickerQ.Integrations.Tests")]
 [assembly: InternalsVisibleTo("TickerQ.Tests")]
+[assembly: InternalsVisibleTo("TickerQ.EntityFrameworkCore.Tests")]
 [assembly: InternalsVisibleTo("TickerQ.Benchmarks")]
 [assembly: InternalsVisibleTo("TickerQ.SDK")]
 [assembly: InternalsVisibleTo("TickerQ.RemoteExecutor")]

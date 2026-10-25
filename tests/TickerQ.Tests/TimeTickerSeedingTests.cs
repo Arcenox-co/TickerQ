@@ -19,7 +19,7 @@ namespace TickerQ.Tests;
 
 /// <summary>
 /// One-time work declared with options.SeedTimeTickers(...) uses the time-ticker chain builder, the time
-/// manager's validation, and the keyed AddOnceAsync identity: one ticker per key, however often it runs.
+/// manager's validation, and a keyed insert: one ticker per key, however often it runs.
 /// </summary>
 [Collection("TickerFunctionProviderState")]
 public sealed class TimeTickerSeedingTests : IDisposable
@@ -94,22 +94,6 @@ public sealed class TimeTickerSeedingTests : IDisposable
             .Add("import-v2", ticker => ticker.StartWith(Fn("Import"))))));
         Assert.Equal(["import-v1", "import-v2"],
             (await Tickers(first, Fn("Import"))).Select(t => t.InitIdentifier).Order());
-    }
-
-    [Fact]
-    public async Task A_key_created_with_AddOnceAsync_is_the_same_seed()
-    {
-        Register("Import");
-        var services = Services(options => options.SeedTimeTickers(tickers => tickers
-            .Add("import-v1", ticker => ticker.StartWith(Fn("Import")))));
-        await BeginEpoch(services);
-        using (StartupSeederAdmissionContext.Enter(new ReconciliationActivationScope(_namespace).ScopeKey, 1))
-            await services.GetRequiredService<ITimeTickerManager<TimeTickerEntity>>()
-                .AddOnceAsync("import-v1", new TimeTickerEntity { Function = Fn("Import") });
-
-        await Seed(services);
-
-        Assert.Single(await Tickers(services, Fn("Import")));
     }
 
     [Fact]

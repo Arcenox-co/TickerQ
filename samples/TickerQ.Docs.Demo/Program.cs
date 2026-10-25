@@ -240,7 +240,7 @@ app.MapPost("/demo/seed", async (
     var now = DateTime.UtcNow;
     var created = new List<object>();
 
-    var waiting = await timeManager.AddOnceAsync("docs-demo:waiting-invoice", new TimeTickerEntity
+    var waiting = await timeManager.AddAsync(new TimeTickerEntity
     {
         Function = "DocsDemo.Invoice.Generate",
         Description = "Generate the monthly customer invoice",

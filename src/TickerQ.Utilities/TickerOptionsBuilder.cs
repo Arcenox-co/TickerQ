@@ -325,9 +325,16 @@ namespace TickerQ.Utilities
         }
 
         private static Managers.TickerManager<TTimeTicker, TCronTicker> CronSeedManager(IServiceProvider serviceProvider)
-            => serviceProvider.GetRequiredService<ICronTickerManager<TCronTicker>>()
-                   as Managers.TickerManager<TTimeTicker, TCronTicker>
+            => BuiltInManager(serviceProvider.GetRequiredService<ICronTickerManager<TCronTicker>>())
                ?? throw new InvalidOperationException("Seeded cron tickers require the built-in cron manager.");
+
+        // UseApplicationDbContext registers staging managers that wrap the built-in one.
+        private static Managers.TickerManager<TTimeTicker, TCronTicker> BuiltInManager(object manager)
+        {
+            while (manager is ITickerManagerDecorator decorator)
+                manager = decorator.InnerManager;
+            return manager as Managers.TickerManager<TTimeTicker, TCronTicker>;
+        }
 
         /// <summary>Builds every declared cron and resolves configuration placeholders in its expression.</summary>
         private static List<(string Key, TCronTicker Entity)> BuildSeededCrons(
@@ -517,8 +524,8 @@ namespace TickerQ.Utilities
 
         /// <summary>
         /// Creates every declared time ticker whose key has no ticker yet. All new declarations are validated
-        /// before any is written; each is then inserted through the keyed AddOnceAsync identity, so concurrent
-        /// replicas converge on one ticker per key. Runs at startup after schedule policies and crons are seeded.
+        /// before any is written; each is then inserted under a deterministic id derived from its key, so
+        /// concurrent replicas converge on one ticker per key. Runs at startup after schedule policies and crons are seeded.
         /// </summary>
         internal async System.Threading.Tasks.Task SeedTimeTickersAsync(
             IServiceProvider serviceProvider, System.Threading.CancellationToken cancellationToken)
@@ -529,8 +536,7 @@ namespace TickerQ.Utilities
             if (declarations.Entries.Entries.Count == 0)
                 return;
 
-            var timeManager = serviceProvider.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
-            var manager = timeManager as Managers.TickerManager<TTimeTicker, TCronTicker>
+            var manager = BuiltInManager(serviceProvider.GetRequiredService<ITimeTickerManager<TTimeTicker>>())
                 ?? throw new InvalidOperationException("Seeded time tickers require the built-in time ticker manager.");
             List<(string Key, TTimeTicker Ticker)> Build() => declarations.Entries.Build(TimeTickerSeedBuilder<TTimeTicker>.Kind,
                 () => new Managers.TimeTickerChainBuilder<TTimeTicker>(() => new TTimeTicker()),
@@ -552,7 +558,7 @@ namespace TickerQ.Utilities
             foreach (var (key, ticker) in Build())
             {
                 if (!missing.Contains(key)) continue;
-                var result = await timeManager.AddOnceAsync(key, ticker, cancellationToken).ConfigureAwait(false);
+                var result = await manager.AddSeededTimeTickerAsync(key, ticker, cancellationToken).ConfigureAwait(false);
                 if (!result.IsSucceeded)
                     throw new InvalidOperationException(
                         $"Seeded time ticker '{key}' could not be created: {result.Exception?.Message}", result.Exception);
@@ -790,8 +796,8 @@ namespace TickerQ.Utilities
 
         /// <summary>
         /// Configure a custom seeder for time tickers, executed when a new reconciliation epoch activates.
-        /// Only <c>AddOnceAsync</c> is keyed; other adds run again on every epoch. Prefer
-        /// <see cref="SeedTimeTickers(Action{TimeTickerSeedBuilder{TTimeTicker}})"/> for work the application owns.
+        /// Its adds run again on every epoch; use
+        /// <see cref="SeedTimeTickers(Action{TimeTickerSeedBuilder{TTimeTicker}})"/> for work that must be created once.
         /// </summary>
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(
             Func<ITimeTickerManager<TTimeTicker>, System.Threading.Tasks.Task> timeSeeder)

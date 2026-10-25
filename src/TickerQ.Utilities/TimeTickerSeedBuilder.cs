@@ -7,9 +7,9 @@ namespace TickerQ.Utilities
     /// <summary>
     /// Declares one-time work this application owns, using the same builder as
     /// <c>ITimeTickerManager.AddChainAsync</c>. When a new reconciliation epoch activates, TickerQ creates
-    /// each declared ticker once per key, the same way as <c>ITimeTickerManager.AddOnceAsync</c>. A key that
-    /// already has a ticker is left untouched, so restarts, epoch bumps, and concurrent replicas never
-    /// create duplicates. To run the work again, change the key (for example <c>import-v2</c>).
+    /// each declared ticker once per key. A key that already has a ticker is left untouched, so restarts,
+    /// epoch bumps, and concurrent replicas never create duplicates. To run the work again, change the key
+    /// (for example <c>import-v2</c>).
     /// </summary>
     public sealed class TimeTickerSeedBuilder<TTimeTicker> where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     {

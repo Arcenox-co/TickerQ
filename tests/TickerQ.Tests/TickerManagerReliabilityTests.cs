@@ -191,7 +191,6 @@ public partial class TickerManagerTests
     {
         static void Invalid<T>(TickerResult<T> result) where T : class { Assert.False(result.IsSucceeded); Assert.IsType<TickerValidatorException>(result.Exception); }
         Invalid(await _timeTickerManager.AddAsync(null!)); Invalid(await _cronTickerManager.AddAsync(null!));
-        Invalid(await _timeTickerManager.AddOnceAsync("test", null!));
         Invalid(await _timeTickerManager.AddBatchAsync(null!)); Invalid(await _cronTickerManager.AddBatchAsync(null!));
         Invalid(await _timeTickerManager.AddBatchAsync([null!])); Invalid(await _cronTickerManager.AddBatchAsync([null!]));
         Invalid(await _timeTickerManager.UpdateBatchAsync(null!)); Invalid(await _cronTickerManager.UpdateBatchAsync(null!));

@@ -15,8 +15,9 @@ namespace TickerQ.EntityFrameworkCore.Tests.Infrastructure.Conformance;
 
 /// <summary>
 /// Starts a real TickerQ host on each configured database and runs work through the scheduler:
-/// startup schema certification and activation, an immediate time ticker, a two-step chain, and a
-/// per-second cron. Requires TICKERQ_CONFORMANCE_LICENSE in addition to a target connection string.
+/// startup schema certification and activation, an immediate time ticker whose published result is read
+/// back through the manager, a two-step chain, and a per-second cron. Requires TICKERQ_CONFORMANCE_LICENSE
+/// in addition to a target connection string.
 /// </summary>
 [Collection("Relational conformance")]
 public sealed class RelationalRuntimeConformanceTests
@@ -39,7 +40,12 @@ public sealed class RelationalRuntimeConformanceTests
 
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
-        builder.Services.MapTicker(single, (_, _) => { singleRan.TrySetResult(); return Task.CompletedTask; });
+        builder.Services.MapTicker(single, (context, _) =>
+        {
+            context.SetResult(new ConformanceResult(suffix, 42));
+            singleRan.TrySetResult();
+            return Task.CompletedTask;
+        });
         builder.Services.MapTicker(parent, (_, _) => Task.CompletedTask);
         builder.Services.MapTicker(child, (_, _) => { childRan.TrySetResult(); return Task.CompletedTask; });
         builder.Services.MapTicker(cron, (_, _) => { cronRan.TrySetResult(); return Task.CompletedTask; });
@@ -80,12 +86,18 @@ public sealed class RelationalRuntimeConformanceTests
                 await db.Set<TimeTickerEntity>().AsNoTracking().CountAsync(x => x.Status == TickerStatus.Done, timeout.Token) >= 3 &&
                 await db.Set<CronTickerOccurrenceEntity<CronTickerEntity>>().AsNoTracking()
                     .CountAsync(x => x.Status == TickerStatus.Done, timeout.Token) > 0, timeout.Token);
+
+            var outcome = await timeManager.WaitForCompletionAsync(job.Result.Id, Deadline, timeout.Token);
+            Assert.True(outcome!.IsSucceeded, outcome.ExceptionMessage);
+            Assert.Equal(new ConformanceResult(suffix, 42), outcome.GetResult<ConformanceResult>());
         }
         finally
         {
             await host.StopAsync(CancellationToken.None);
         }
     }
+
+    private sealed record ConformanceResult(string Target, int Value);
 
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 

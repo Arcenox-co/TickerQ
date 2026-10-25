@@ -34,15 +34,6 @@ namespace TickerQ.Utilities.Interfaces.Managers
                 "StageAsync requires the EF Core UseApplicationDbContext<TContext> integration and a scoped manager. " +
                 "Use AddAsync for independent scheduling.");
 
-        /// <summary>
-        /// Idempotent add keyed by <paramref name="initIdentifier"/>: creates the
-        /// ticker only if no time ticker with that identifier exists yet, otherwise
-        /// returns the existing one untouched. Made for startup seeding
-        /// (<c>UseTickerSeeder</c>) so re-running the seeder on every app start
-        /// doesn't create duplicate one-off tickers. Built-in durable providers converge concurrent
-        /// first-time seeding on a deterministic identity and return the committed winner.
-        /// </summary>
-        Task<TickerResult<TTimeTicker>> AddOnceAsync(string initIdentifier, TTimeTicker entity, CancellationToken cancellationToken = default);
         Task<TickerResult<TTimeTicker>> UpdateAsync(TTimeTicker timeTicker, CancellationToken cancellationToken = default);
         Task<TickerResult<TTimeTicker>> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
         /// <summary>Atomically admits a root ticker to run now. An active ticker or chain child cannot be acquired. Success means accepted, not completed; AffectedRows is 1.</summary>
@@ -65,6 +56,42 @@ namespace TickerQ.Utilities.Interfaces.Managers
         /// </summary>
         Task<TickerResult<TTimeTicker>> RequestCancellationAsync(Guid id, CancellationToken cancellationToken = default)
             => throw new NotSupportedException("This manager does not support cancelling time tickers.");
+        /// <summary>
+        /// Moves a root ticker that has not started yet to <paramref name="executionTime"/>, applying its
+        /// schedule policy as UpdateAsync does. Fails when the ticker is missing, is a chain step (steps run
+        /// after their parent), or has already been queued, started, or finished, including when that happens
+        /// while the move is being saved.
+        /// </summary>
+        Task<TickerResult<TTimeTicker>> RescheduleAsync(Guid id, DateTime executionTime, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support rescheduling time tickers.");
+
+        /// <summary>
+        /// Cancels every pending (Idle or Queued) standalone job and chain root of <typeparamref name="TFunction"/>,
+        /// together with their pending chain steps. Steps of <typeparamref name="TFunction"/> inside other chains
+        /// are not changed; cancel those chains with CancelAsync. Running and finished tickers are not changed,
+        /// and cron tickers keep creating occurrences; disable those with SetEnabledAsync. AffectedRows is the
+        /// number of tickers cancelled, chain steps included.
+        /// </summary>
+        Task<TickerResult<TTimeTicker>> CancelPendingAsync<TFunction>(CancellationToken cancellationToken = default)
+            where TFunction : class, ITickerFunctionBase
+            => throw new NotSupportedException("This manager does not support pending ticker cancellation.");
+
+        /// <summary>
+        /// Reads the stored status of a time ticker and, once it has succeeded, the result it published.
+        /// Returns null when the ticker does not exist (or retention has removed it).
+        /// </summary>
+        Task<TickerOutcome> GetOutcomeAsync(Guid id, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support reading ticker outcomes.");
+
+        /// <summary>
+        /// Waits until the time ticker finishes (see <see cref="TickerOutcome.IsCompleted"/>) or
+        /// <paramref name="timeout"/> elapses, then returns its outcome. Check IsCompleted: after a timeout
+        /// the outcome reports the last stored status. Returns null when the ticker does not exist. The store
+        /// is polled, so this works across replicas; a chain root completes before its steps run.
+        /// </summary>
+        Task<TickerOutcome> WaitForCompletionAsync(Guid id, TimeSpan timeout, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support waiting for ticker completion.");
+
         /// <summary>Changes only the root's deletion policy, including for completed chains.</summary>
         Task<TickerResult<TTimeTicker>> SetDeleteBehaviorAsync(Guid rootId, ChainDeleteBehavior behavior, CancellationToken cancellationToken = default)
             => throw new NotSupportedException("This manager does not support updating chain deletion policies.");

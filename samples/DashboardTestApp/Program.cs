@@ -63,29 +63,23 @@ builder.Services.AddTickerQ(options =>
             efOptions.AddAssistantHistory(h => h.MaxConversationsPerUser = 50);
     });
 
-    // Seed a couple of one-off time tickers on startup. AddOnceAsync makes the
-    // seeder idempotent (keyed by init identifier) — restarting the app no longer
-    // duplicates them. Cron tickers are seeded automatically from the
-    // [TickerFunction] cron expressions on SampleJobs below.
-    options.UseTickerSeeder(async timeManager =>
-    {
-        await timeManager.AddOnceAsync("seed:welcome-email", new TimeTickerEntity
-        {
-            Function = "SendWelcomeEmail",
-            Description = "One-off welcome email",
-            ExecutionTime = DateTime.UtcNow.AddSeconds(20),
-        });
-
-        await timeManager.AddOnceAsync("seed:invoice", new TimeTickerEntity
-        {
-            Function = "GenerateInvoice",
-            Description = "Scheduled invoice generation",
-            ExecutionTime = DateTime.UtcNow.AddMinutes(2),
-            Retries = 4,
-            // [5, 10, 20, 40] — no more hand-rolled arrays.
-            RetryIntervals = RetryPolicy.Exponential(baseSeconds: 5, retries: 4),
-        });
-    });
+    // Seed a couple of one-off time tickers on startup. Each key is created once,
+    // so restarting the app does not duplicate them. Cron tickers are seeded
+    // automatically from the [TickerFunction] cron expressions on SampleJobs below.
+    options.SeedTimeTickers(tickers => tickers
+        .Add("seed:welcome-email", ticker => ticker
+            .RunAt(DateTime.UtcNow.AddSeconds(20))
+            .WithDescription("One-off welcome email")
+            .StartWith("SendWelcomeEmail"))
+        .Add("seed:invoice", ticker => ticker
+            .RunAt(DateTime.UtcNow.AddMinutes(2))
+            .WithDescription("Scheduled invoice generation")
+            .StartWith("GenerateInvoice", step =>
+            {
+                step.Retries = 4;
+                // [5, 10, 20, 40] — no more hand-rolled arrays.
+                step.RetryIntervals = RetryPolicy.Exponential(baseSeconds: 5, retries: 4);
+            })));
 
     // Default mount point: /tickerq/dashboard with three coexisting schemes.
     // Browser users get an HTTP-only cookie via /login; script clients can

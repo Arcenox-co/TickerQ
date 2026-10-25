@@ -85,6 +85,31 @@ namespace TickerQ.Utilities.Interfaces.Managers
             where TFunction : class, ITickerFunction<TRequest>
             => throw new NotSupportedException("This manager does not support typed cron schedules.");
         
+        /// <summary>
+        /// Lists the next <paramref name="count"/> run times of a cron ticker, in UTC, after the current
+        /// time, applying its time zone and schedule policy. The list is empty while the cron is disabled or
+        /// paused. <paramref name="count"/> must be between 1 and 1000.
+        /// </summary>
+        Task<TickerResult<IReadOnlyList<DateTime>>> GetNextOccurrencesAsync(Guid cronTickerId, int count,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support listing cron occurrences.");
+
+        /// <summary>
+        /// Reads the stored status of a cron occurrence (for example one returned by RunNowAsync) and, once
+        /// it has succeeded, the result it published. Returns null when the occurrence does not exist.
+        /// </summary>
+        Task<TickerOutcome> GetOutcomeAsync(Guid occurrenceId, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support reading occurrence outcomes.");
+
+        /// <summary>
+        /// Waits until the cron occurrence finishes or <paramref name="timeout"/> elapses, then returns its
+        /// outcome. Check IsCompleted: after a timeout the outcome reports the last stored status. Returns null
+        /// when the occurrence does not exist. The store is polled, so this works across replicas.
+        /// </summary>
+        Task<TickerOutcome> WaitForCompletionAsync(Guid occurrenceId, TimeSpan timeout,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support waiting for occurrence completion.");
+
         // Batch operations
         Task<TickerResult<List<TCronTicker>>> AddBatchAsync(List<TCronTicker> entities, CancellationToken cancellationToken = default);
         Task<TickerResult<List<TCronTicker>>> UpdateBatchAsync(List<TCronTicker> cronTickers, CancellationToken cancellationToken = default);

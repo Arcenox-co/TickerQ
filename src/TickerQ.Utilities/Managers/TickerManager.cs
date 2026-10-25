@@ -43,7 +43,7 @@ namespace TickerQ.Utilities.Managers
         private long _runtimeActivationEpoch => _schedulerOptions is { AutomaticReconciliationEpoch: true }
             ? _schedulerOptions.RuntimeActivationEpoch
             : _configuredActivationEpoch;
-        private static readonly SemaphoreSlim AddOnceGate = new(1, 1);
+        private static readonly SemaphoreSlim SeededTimeTickerGate = new(1, 1);
         public TickerManager(
             ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerQHostScheduler tickerQHostScheduler,
@@ -116,19 +116,24 @@ namespace TickerQ.Utilities.Managers
             }
         }
 
-        async Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.AddOnceAsync(string initIdentifier, TTimeTicker entity, CancellationToken cancellationToken)
+        /// <summary>
+        /// Creates a SeedTimeTickers declaration once per key: if a time ticker with that key is stored, it is
+        /// returned untouched. Concurrent replicas converge on a deterministic id derived from the key.
+        /// </summary>
+        internal async Task<TickerResult<TTimeTicker>> AddSeededTimeTickerAsync(string initIdentifier, TTimeTicker entity,
+            CancellationToken cancellationToken)
         {
             if (entity is null)
                 return new TickerResult<TTimeTicker>(new TickerValidatorException("Ticker must not be null."));
             if (string.IsNullOrWhiteSpace(initIdentifier))
                 return new TickerResult<TTimeTicker>(
-                    new TickerValidatorException("AddOnceAsync requires a non-empty initIdentifier."));
+                    new TickerValidatorException("A seeded time ticker requires a non-empty key."));
 
             // Admission must happen before the process-wide deduplication gate. Otherwise an ordinary
-            // pre-start caller can hold AddOnceGate while waiting for activation and deadlock the
+            // pre-start caller can hold the gate while waiting for activation and deadlock the
             // initializer seeder that is authorized to complete that activation.
             await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
-            await AddOnceGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await SeededTimeTickerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 var existing = await _persistenceProvider
@@ -153,7 +158,7 @@ namespace TickerQ.Utilities.Managers
             }
             finally
             {
-                AddOnceGate.Release();
+                SeededTimeTickerGate.Release();
             }
         }
 
