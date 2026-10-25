@@ -3,14 +3,14 @@ namespace TickerQ.EntityFrameworkCore.Tests.Infrastructure;
 public sealed class SampleMigrationRollbackContractTests
 {
     [Fact]
-    public void Professional_sample_migrations_reject_destructive_down()
+    public void Sample_store_upgrade_migrations_reject_destructive_down()
     {
         var root = FindRepositoryRoot();
         var relativePaths = new[]
         {
-            "samples/TickerQ.Sample.Console/Migrations/20260730141338_ProfessionalTickerStoreUpgrade.cs",
-            "samples/TickerQ.Sample.WebApi/Migrations/20260730141346_ProfessionalTickerStoreUpgrade.cs",
-            "samples/TickerQ.Sample.ApplicationDbContext/Migrations/20260730141353_ProfessionalTickerStoreUpgrade.cs"
+            "samples/TickerQ.Sample.ApplicationDbContext/Migrations/20261024223434_UpgradeTickerQStore.cs",
+            "samples/TickerQ.Sample.Console/Migrations/20261024223427_UpgradeTickerQStore.cs",
+            "samples/TickerQ.Sample.WebApi/Migrations/20261024223431_UpgradeTickerQStore.cs"
         };
 
         foreach (var relativePath in relativePaths)

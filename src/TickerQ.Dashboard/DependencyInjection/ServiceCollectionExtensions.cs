@@ -192,8 +192,9 @@ namespace TickerQ.Dashboard.DependencyInjection
 
                 // Serve the runtime config as an external script (before auth). Keeping it
                 // out-of-line lets the dashboard run under CSP script-src 'self'.
-                // Cached for 60s with an ETag derived from the payload, so config
-                // changes propagate within a minute without a per-request body.
+                // The browser revalidates it on every load against an ETag derived from
+                // the payload: unchanged config costs a 304, and a different user in the
+                // same browser (after Sign out) never sees the previous user's read-only flag.
                 dashboardApp.Use(async (context, next) =>
                 {
                     if (string.Equals(context.Request.Path.Value, "/__tickerq-config.js", StringComparison.OrdinalIgnoreCase))
@@ -205,7 +206,7 @@ namespace TickerQ.Dashboard.DependencyInjection
                         // read-only), so shared proxy caches must not serve it
                         // across users.
                         context.Response.Headers.ETag = etag;
-                        context.Response.Headers.CacheControl = "private, max-age=60";
+                        context.Response.Headers.CacheControl = "private, no-cache";
 
                         if (context.Request.Headers.IfNoneMatch.ToString().Contains(etag, StringComparison.Ordinal))
                         {
@@ -467,6 +468,9 @@ namespace TickerQ.Dashboard.DependencyInjection
         /// This method detects and strips the PathBase prefix at request time so routing works regardless
         /// of middleware ordering.
         /// </summary>
+        /// <summary>HttpContext item holding the application's path base, before the dashboard prefix was added.</summary>
+        internal const string ApplicationPathBaseItem = "TickerQ.ApplicationPathBase";
+
         private static void MapPathBaseAware(this IApplicationBuilder app, string basePath, Action<IApplicationBuilder> configuration)
         {
             var branchBuilder = app.New();
@@ -494,7 +498,9 @@ namespace TickerQ.Dashboard.DependencyInjection
                     var originalPath = context.Request.Path;
                     var originalPathBase = context.Request.PathBase;
 
-                    // Mirror Map() behavior: move the matched segment from Path to PathBase
+                    // Mirror Map() behavior: move the matched segment from Path to PathBase. Keep the
+                    // application's own path base for redirects that belong to the host, such as its login page.
+                    context.Items[ApplicationPathBaseItem] = originalPathBase;
                     context.Request.PathBase = originalPathBase.Add(matchedPath);
                     context.Request.Path = remainingPath;
 

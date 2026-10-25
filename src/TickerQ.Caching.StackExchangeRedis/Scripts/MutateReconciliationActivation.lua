@@ -1,11 +1,14 @@
 -- The single mutation boundary for durable reconciliation activation metadata.
--- KEYS[1] = dedicated activation metadata hash
--- ARGV[1] = begin | checkpoint | commit
--- ARGV[2] = canonical positive Int64 epoch
+-- KEYS[1] = dedicated activation metadata hash (exactly epoch, phase, checkpoint; other scripts rely on that)
+-- KEYS[2] = startup manifest hash for the same scope (current, history)
+-- ARGV[1] = begin | checkpoint | commit | read
+-- ARGV[2] = canonical positive Int64 epoch (ignored for read)
 -- ARGV[3] = checkpoint (only for checkpoint; empty otherwise)
--- Returns { epoch, phase, checkpoint }, all as strings.
+-- ARGV[4] = startup manifest fingerprint recorded by a writing begin (empty = none)
+-- ARGV[5] = maximum number of earlier fingerprints kept
+-- Returns { epoch, phase, checkpoint, manifest, history }, all as strings.
 -- IMPORTANT: every key, argument, and existing field is validated before the first write.
-if #KEYS ~= 1 or #ARGV ~= 3 then
+if #KEYS ~= 2 or #ARGV ~= 5 then
     return redis.error_reply('invalid activation mutation argument count')
 end
 
@@ -14,16 +17,29 @@ if keyType ~= 'none' and keyType ~= 'hash' then
     return redis.error_reply('reconciliation activation metadata key has an incompatible Redis type')
 end
 
-local operation, target, requestedCheckpoint = ARGV[1], ARGV[2], ARGV[3]
+local manifestType = redis.call('TYPE', KEYS[2])['ok']
+if manifestType ~= 'none' and manifestType ~= 'hash' then
+    return redis.error_reply('reconciliation activation manifest key has an incompatible Redis type')
+end
+
+local operation, target, requestedCheckpoint, requestedManifest = ARGV[1], ARGV[2], ARGV[3], ARGV[4]
+local maxHistory = tonumber(ARGV[5])
 local function validEpoch(value, allowZero)
     if value == '0' then return allowZero end
     if not string.match(value, '^[1-9][0-9]*$') or #value > 19 then return false end
     return #value < 19 or value <= '9223372036854775807'
 end
-if operation ~= 'begin' and operation ~= 'checkpoint' and operation ~= 'commit' then
+if operation ~= 'begin' and operation ~= 'checkpoint' and operation ~= 'commit' and operation ~= 'read' then
     return redis.error_reply('invalid activation mutation operation')
 end
-if not validEpoch(target, false) then
+if not maxHistory or maxHistory < 0 then
+    return redis.error_reply('invalid activation manifest history bound')
+end
+if #requestedManifest > 48 or string.find(requestedManifest, ',', 1, true) or
+   (requestedManifest ~= '' and operation ~= 'begin') then
+    return redis.error_reply('invalid activation manifest')
+end
+if operation ~= 'read' and not validEpoch(target, false) then
     return redis.error_reply('invalid activation target epoch')
 end
 if operation == 'checkpoint' then
@@ -50,6 +66,15 @@ if keyType == 'hash' then
     end
 end
 
+local manifest, history = '', ''
+if manifestType == 'hash' then
+    manifest = redis.call('HGET', KEYS[2], 'current') or ''
+    history = redis.call('HGET', KEYS[2], 'history') or ''
+end
+if operation == 'read' then
+    return {epoch, phase, checkpoint, manifest, history}
+end
+
 local function compareEpoch(left, right)
     if #left < #right then return -1 end
     if #left > #right then return 1 end
@@ -60,11 +85,12 @@ end
 
 local relation = compareEpoch(target, epoch)
 local shouldWrite = false
+local claimed = false
 if operation == 'begin' then
     if relation > 0 then
-        epoch, phase, checkpoint, shouldWrite = target, '1', '', true
+        epoch, phase, checkpoint, shouldWrite, claimed = target, '1', '', true, true
     elseif relation == 0 and phase == '0' then
-        phase, shouldWrite = '1', true
+        phase, shouldWrite, claimed = '1', true, true
     end
 elseif operation == 'checkpoint' then
     if relation == 0 and phase == '1' and checkpoint ~= requestedCheckpoint then
@@ -81,7 +107,22 @@ elseif relation == 0 and phase == '1' then
     phase, shouldWrite = '2', true
 end
 
+if claimed then
+    -- Same transition as ActivationManifests.Advance: the previous fingerprint moves to the front,
+    -- the new one leaves the history, duplicates collapse, and the list stays bounded.
+    local nextHistory, seen = {}, {}
+    local function keep(value)
+        if value ~= '' and value ~= requestedManifest and not seen[value] and #nextHistory < maxHistory then
+            seen[value] = true
+            table.insert(nextHistory, value)
+        end
+    end
+    keep(manifest)
+    for entry in string.gmatch(history, '[^,]+') do keep(entry) end
+    manifest, history = requestedManifest, table.concat(nextHistory, ',')
+    redis.call('HSET', KEYS[2], 'current', manifest, 'history', history)
+end
 if shouldWrite then
     redis.call('HSET', KEYS[1], 'epoch', epoch, 'phase', phase, 'checkpoint', checkpoint)
 end
-return {epoch, phase, checkpoint}
+return {epoch, phase, checkpoint, manifest, history}

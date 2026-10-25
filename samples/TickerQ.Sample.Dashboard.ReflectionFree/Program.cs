@@ -8,9 +8,12 @@ var builder = WebApplication.CreateSlimBuilder(args);
 
 builder.Services.AddTickerQ(options =>
 {
-    // Even the in-memory provider uses this physical process-local partition and exact epoch.
+    // Even the in-memory provider uses this physical process-local partition.
     options.UseApplicationNamespace("reflection-free-dashboard-sample");
-    options.UseReconciliationEpoch(1);
+    // Cron tickers this app owns; created once, updated when the code changes, never duplicated.
+    options.SeedCronTickers(crons => crons
+        .Add("ReflectionFree_CronJob", "0 */5 * * * *")
+        .Add("Background.CleanupJob", "0 0 * * * *"));
     options.WithJsonContext(TickerQRequestJsonContext.Default);
     options.AddDashboard(dashboard => dashboard.AllowAnonymousDashboard());
 });
@@ -19,7 +22,6 @@ builder.Services.AddTickerQ(options =>
 builder.Services.MapTickerGroup("Background", group =>
 {
     group.MapTicker<CleanupJob>()
-        .WithCron("0 0 * * * *")
         .WithMaxConcurrency(1);
 });
 

@@ -26,6 +26,9 @@ internal class AuthInfoResponse
     /// redirect here with <c>?returnUrl=…</c> when a session expires.
     /// </summary>
     public string LoginRedirect { get; set; }
+
+    /// <summary>Host-app logout endpoint (Host mode only). Sign out navigates here.</summary>
+    public string LogoutRedirect { get; set; }
 }
 
 internal class AuthValidateResponse

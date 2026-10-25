@@ -611,10 +611,16 @@ namespace TickerQ.Utilities.Infrastructure
                 MissedExecutionAction = c.MissedExecutionAction,
                 MaximumLatenessSeconds = c.MaximumLateness.HasValue ? checked((long)c.MaximumLateness.Value.TotalSeconds) : null,
                 CatchUpMode = c.CatchUpMode,
+                IsSeeded = IsSeededCron(c),
             };
         }
 
-        private static CronOccurrenceFlatDto MapOccurrence(
+        // Seeded rows carry a SeedKey; rows seeded by older versions only carry the seeded InitIdentifier.
+        internal static bool IsSeededCron(CronTickerEntity cron)
+            => !string.IsNullOrEmpty(cron.SeedKey)
+               || (cron.InitIdentifier?.StartsWith("MemoryTicker_Seeded_", StringComparison.Ordinal) ?? false);
+
+                private static CronOccurrenceFlatDto MapOccurrence(
             CronTickerOccurrenceEntity<TCronTicker> e, string parentFunction)
         {
             return new CronOccurrenceFlatDto

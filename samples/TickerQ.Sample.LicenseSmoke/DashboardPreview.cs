@@ -22,7 +22,6 @@ internal static class DashboardPreview
         {
             options.UseLicense(licensePath);
             options.UseApplicationNamespace("license-smoke-dashboard");
-            options.UseReconciliationEpoch(1);
             if (example == "database")
             {
                 var databasePath = Path.Combine(Path.GetTempPath(), "tickerq-database-logs-preview.db");

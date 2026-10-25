@@ -113,18 +113,30 @@ public static class ServiceBuilder
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
+        DbContextOptions<TContext> BuildOptions(IServiceProvider sp)
+        {
+            var optionsBuilder = new DbContextOptionsBuilder<TContext>();
+            optionsAction.Invoke(optionsBuilder);
+            optionsBuilder.AddInterceptors(MySqlDeleteAliasInterceptor.Instance);
+            TickerModelOptionsExtension.Configure(optionsBuilder, builder);
+            optionsBuilder.UseApplicationServiceProvider(sp);
+            return optionsBuilder.Options;
+        }
+
         builder.ConfigureServices = (services) =>
         {
             services.TryAddSingleton<IDbContextFactory<TContext>>(sp =>
-            {
-                var optionsBuilder = new DbContextOptionsBuilder<TContext>();
-                optionsAction.Invoke(optionsBuilder);
-                optionsBuilder.AddInterceptors(MySqlDeleteAliasInterceptor.Instance);
-                TickerModelOptionsExtension.Configure(optionsBuilder, builder);
-                optionsBuilder.UseApplicationServiceProvider(sp);
-                return new PooledDbContextFactory<TContext>(optionsBuilder.Options, builder.PoolSize);
-            });
+                new PooledDbContextFactory<TContext>(BuildOptions(sp), builder.PoolSize));
             services.TryAddScoped<TContext>(sp => sp.GetRequiredService<IDbContextFactory<TContext>>().CreateDbContext());
+            // EF Core tools find a context by name through the registered DbContextOptions, as
+            // AddDbContext registers them. Without these, `dotnet ef migrations add` in a project that
+            // has no migrations yet reports "No DbContext named 'TickerQDbContext' was found". An
+            // application that registered the options itself keeps its own registration.
+            if (!services.Any(descriptor => descriptor.ServiceType == typeof(DbContextOptions<TContext>)))
+            {
+                services.AddSingleton(BuildOptions);
+                services.AddSingleton<DbContextOptions>(sp => sp.GetRequiredService<DbContextOptions<TContext>>());
+            }
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerEfCorePersistenceProvider<TContext, TTimeTicker, TCronTicker>>();
             RegisterAssistantHistory<TContext, TTimeTicker, TCronTicker>(builder, services);
             if (builder.ExecutionLogs?.PersistToDatabase == true)

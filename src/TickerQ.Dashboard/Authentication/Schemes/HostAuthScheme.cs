@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Security.Claims;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -41,9 +42,21 @@ internal sealed class HostAuthScheme : AuthSchemeBase
         }
 
         // Derive the username from the authenticated identity, never from an
-        // unauthenticated one, falling back to a generic host user when the
-        // authenticated identity carries no name.
-        return AuthResult.Success(authenticatedIdentity.Name ?? "host-user",
+        // unauthenticated one: the configured claims first, then the identity's
+        // name, then a generic host user.
+        var nameClaims = context.RequestServices?.GetService<AuthConfig>()?.HostUserNameClaims;
+        return AuthResult.Success(DisplayName(authenticatedIdentity, nameClaims),
             DashboardUserIdentity.FromIdentity(authenticatedIdentity));
+    }
+
+    internal static string DisplayName(ClaimsIdentity identity, string[]? nameClaims)
+    {
+        foreach (var claimType in nameClaims ?? [])
+        {
+            var value = identity.FindFirst(claimType)?.Value;
+            if (!string.IsNullOrWhiteSpace(value))
+                return value;
+        }
+        return string.IsNullOrWhiteSpace(identity.Name) ? "host-user" : identity.Name;
     }
 }

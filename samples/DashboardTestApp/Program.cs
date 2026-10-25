@@ -39,9 +39,15 @@ builder.Services.AddTickerQ(options =>
     if (!string.IsNullOrWhiteSpace(licensePath))
         options.UseLicense(licensePath);
 
-    // Physical runtime partition + exact deployment epoch; keep both stable across replicas.
+    // Physical runtime partition; keep it stable across replicas.
     options.UseApplicationNamespace("dashboard-test-sample");
-    options.UseReconciliationEpoch(1);
+    // Cron tickers this app owns; created once, updated when the code changes, never duplicated.
+    options.SeedCronTickers(crons => crons
+        .Add("Heartbeat", "* * * * *")
+        .Add("CleanupTempFiles", "*/5 * * * *")
+        .Add("FlakyJob", "*/2 * * * *")
+        .Add("DailyReport", "0 0 * * *")
+        .Add("AlwaysFails", "* * * * *"));
     options.AddOperationalStore(efOptions =>
     {
         efOptions.UseTickerQDbContext<TickerQDbContext>(dbOptions =>
@@ -57,29 +63,23 @@ builder.Services.AddTickerQ(options =>
             efOptions.AddAssistantHistory(h => h.MaxConversationsPerUser = 50);
     });
 
-    // Seed a couple of one-off time tickers on startup. AddOnceAsync makes the
-    // seeder idempotent (keyed by init identifier) — restarting the app no longer
-    // duplicates them. Cron tickers are seeded automatically from the
-    // [TickerFunction] cron expressions on SampleJobs below.
-    options.UseTickerSeeder(async timeManager =>
-    {
-        await timeManager.AddOnceAsync("seed:welcome-email", new TimeTickerEntity
-        {
-            Function = "SendWelcomeEmail",
-            Description = "One-off welcome email",
-            ExecutionTime = DateTime.UtcNow.AddSeconds(20),
-        });
-
-        await timeManager.AddOnceAsync("seed:invoice", new TimeTickerEntity
-        {
-            Function = "GenerateInvoice",
-            Description = "Scheduled invoice generation",
-            ExecutionTime = DateTime.UtcNow.AddMinutes(2),
-            Retries = 4,
-            // [5, 10, 20, 40] — no more hand-rolled arrays.
-            RetryIntervals = RetryPolicy.Exponential(baseSeconds: 5, retries: 4),
-        });
-    });
+    // Seed a couple of one-off time tickers on startup. Each key is created once,
+    // so restarting the app does not duplicate them. Cron tickers are seeded
+    // automatically from the [TickerFunction] cron expressions on SampleJobs below.
+    options.SeedTimeTickers(tickers => tickers
+        .Add("seed:welcome-email", ticker => ticker
+            .RunAt(DateTime.UtcNow.AddSeconds(20))
+            .WithDescription("One-off welcome email")
+            .StartWith("SendWelcomeEmail"))
+        .Add("seed:invoice", ticker => ticker
+            .RunAt(DateTime.UtcNow.AddMinutes(2))
+            .WithDescription("Scheduled invoice generation")
+            .StartWith("GenerateInvoice", step =>
+            {
+                step.Retries = 4;
+                // [5, 10, 20, 40] — no more hand-rolled arrays.
+                step.RetryIntervals = RetryPolicy.Exponential(baseSeconds: 5, retries: 4);
+            })));
 
     // Default mount point: /tickerq/dashboard with three coexisting schemes.
     // Browser users get an HTTP-only cookie via /login; script clients can
@@ -185,7 +185,7 @@ public class SampleJobs
 
     public SampleJobs(ILogger<SampleJobs> logger) => _logger = logger;
 
-    [TickerFunction("Heartbeat", "* * * * *")]
+    [TickerFunction("Heartbeat")]
     public Task Heartbeat(TickerFunctionContext context, CancellationToken ct)
     {
         // ILogger on purpose (not Console) — exercises the in-process log capture
@@ -195,7 +195,7 @@ public class SampleJobs
         return Task.CompletedTask;
     }
 
-    [TickerFunction("CleanupTempFiles", "*/5 * * * *")]
+    [TickerFunction("CleanupTempFiles")]
     public async Task CleanupTempFiles(TickerFunctionContext context, CancellationToken ct)
     {
         _logger.LogInformation("Scanning temp directories…");
@@ -203,7 +203,7 @@ public class SampleJobs
         _logger.LogInformation("Cleaned temp files at {Now:O}", DateTime.UtcNow);
     }
 
-    [TickerFunction("FlakyJob", "*/2 * * * *")]
+    [TickerFunction("FlakyJob")]
     public Task FlakyJob(TickerFunctionContext context, CancellationToken ct)
     {
         _logger.LogInformation("FlakyJob attempt starting…");
@@ -217,7 +217,7 @@ public class SampleJobs
         return Task.CompletedTask;
     }
 
-    [TickerFunction("DailyReport", "0 0 * * *")]
+    [TickerFunction("DailyReport")]
     public async Task DailyReport(TickerFunctionContext context, CancellationToken ct)
     {
         _logger.LogInformation("Generating daily report…");
@@ -227,7 +227,7 @@ public class SampleJobs
 
     // Fails every run → guaranteed Failed rows for testing the Executions
     // page's new Retry button (single retry re-runs the parent cron on demand).
-    [TickerFunction("AlwaysFails", "* * * * *")]
+    [TickerFunction("AlwaysFails")]
     public Task AlwaysFails(TickerFunctionContext context, CancellationToken ct)
     {
         throw new InvalidOperationException("AlwaysFails failed on purpose — use the Retry button on the Executions page.");

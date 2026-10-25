@@ -20,6 +20,16 @@ internal interface ITickerOptionsSeeding
     Func<IServiceProvider, CancellationToken, System.Threading.Tasks.Task> TimeSeederAction { get; }
     Func<IServiceProvider, CancellationToken, System.Threading.Tasks.Task> CronSeederAction { get; }
     Func<IServiceProvider, CancellationToken, System.Threading.Tasks.Task> SchedulePolicySeederAction => null;
+    /// <summary>Builds and validates the crons declared with SeedCronTickers; null when none are declared.</summary>
+    Func<IServiceProvider, CancellationToken, System.Threading.Tasks.Task<IReadOnlyList<DefinedCronTickerSeed>>> CronTickerSeedFactory => null;
+    /// <summary>Creates the time tickers declared with SeedTimeTickers; null when none are declared.</summary>
+    Func<IServiceProvider, CancellationToken, System.Threading.Tasks.Task> TimeTickerSeedAction => null;
+    /// <summary>Creates or updates the policies declared with SeedSchedulePolicies; null when none are declared.</summary>
+    Func<IServiceProvider, CancellationToken, System.Threading.Tasks.Task> SchedulePolicySeedAction => null;
+    /// <summary>Fingerprints this host's startup inputs (see <c>StartupManifestBuilder</c>); null when unsupported.</summary>
+    Func<IServiceProvider, CancellationToken, System.Threading.Tasks.Task<string>> StartupManifestFactory => null;
+    /// <summary>Checks that must pass before an automatic epoch is claimed; null when there are none.</summary>
+    Func<IServiceProvider, CancellationToken, System.Threading.Tasks.Task> StartupPreflight => null;
 }
 
 internal class TickerExecutionContext

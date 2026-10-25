@@ -6,14 +6,14 @@ namespace TickerQ.Sample.LicenseSmoke;
 // contact external services, or alter customer data. Cron seeding is disabled in --suite.
 public sealed class PreviewJobs(ILogger<PreviewJobs> logger)
 {
-    [TickerFunction("PreviewHeartbeat", "* * * * *")]
+    [TickerFunction("PreviewHeartbeat")]
     public Task Heartbeat(TickerFunctionContext context, CancellationToken cancellationToken)
     {
         logger.LogInformation("Local preview heartbeat completed.");
         return Task.CompletedTask;
     }
 
-    [TickerFunction("PreviewDailySummary", "0 2 * * *")]
+    [TickerFunction("PreviewDailySummary")]
     public Task DailySummary(TickerFunctionContext context, CancellationToken cancellationToken)
     {
         logger.LogInformation("Local preview daily summary completed; no report was sent.");

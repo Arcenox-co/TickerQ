@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using System.Threading;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -35,10 +37,15 @@ namespace TickerQ.Utilities
         internal bool RequestGZipCompressionEnabled { get; set; } = false;
 
         /// <summary>
-        /// Controls whether code-defined cron tickers are seeded on startup.
-        /// Defaults to true.
+        /// Controls whether the cron tickers declared with <see cref="SeedCronTickers(Action{CronTickerSeedBuilder})"/>
+        /// are reconciled on startup. Defaults to true.
         /// </summary>
         internal bool SeedDefinedCronTickers { get; set; } = true;
+
+        /// <summary>Cron ticker declarations, evaluated when a new reconciliation epoch activates.</summary>
+        internal List<Action<CronTickerSeedBuilder<TCronTicker>, IServiceProvider>> CronTickerSeeds { get; } = new();
+        internal List<Action<TimeTickerSeedBuilder<TTimeTicker>, IServiceProvider>> TimeTickerSeeds { get; } = new();
+        internal List<Action<SchedulePolicySeedBuilder, IServiceProvider>> SchedulePolicySeeds { get; } = new();
         internal long ReconciliationEpoch { get; private set; }
         internal string ApplicationNamespace { get; private set; }
         internal Dictionary<string, string> LegacyDefinedCronOwnership { get; } = new(StringComparer.Ordinal);
@@ -83,6 +90,15 @@ namespace TickerQ.Utilities
         Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> ITickerOptionsSeeding.TimeSeederAction => TimeSeederAction;
         Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> ITickerOptionsSeeding.CronSeederAction => CronSeederAction;
         Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> ITickerOptionsSeeding.SchedulePolicySeederAction => SchedulePolicySeederAction;
+        Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task<IReadOnlyList<DefinedCronTickerSeed>>> ITickerOptionsSeeding.CronTickerSeedFactory => BuildCronTickerSeedsAsync;
+        Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> ITickerOptionsSeeding.TimeTickerSeedAction
+            => TimeTickerSeeds.Count == 0 ? null : SeedTimeTickersAsync;
+        Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> ITickerOptionsSeeding.SchedulePolicySeedAction
+            => SchedulePolicySeeds.Count == 0 ? null : SeedSchedulePoliciesAsync;
+        Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task<string>> ITickerOptionsSeeding.StartupManifestFactory
+            => BuildStartupManifestAsync;
+        Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> ITickerOptionsSeeding.StartupPreflight
+            => PreflightSeedsAsync;
 
         internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }
@@ -199,12 +215,385 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
-        /// Disable automatic seeding of code-defined cron tickers on startup.
+        /// Skip reconciling the cron tickers declared with <c>SeedCronTickers(...)</c> on startup.
         /// </summary>
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> IgnoreSeedDefinedCronTickers()
         {
             SeedDefinedCronTickers = false;
             return this;
+        }
+
+        /// <summary>
+        /// Declares the cron tickers this application owns, with the same builder as
+        /// <c>ICronTickerManager.AddChainAsync</c>. TickerQ reconciles the full list when a new reconciliation
+        /// epoch activates: each cron is created once, updated in place when its definition changes, and
+        /// retired after the grace period when it is removed. Restarts with the same epoch and concurrent
+        /// replicas never create duplicates. Can be called more than once; declarations combine.
+        /// </summary>
+        /// <example>
+        /// <code>
+        /// options.SeedCronTickers(crons => crons
+        ///     .Add("Heartbeat", "* * * * *")
+        ///     .Add(cron => cron
+        ///         .WithExpression("0 0 9 * * 1-5")
+        ///         .InTimeZone("Europe/Berlin")
+        ///         .UsingPolicy("Business hours")
+        ///         .StartWith("DailyReport", step => step.Retries = 2)));
+        /// </code>
+        /// </example>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SeedCronTickers(Action<CronTickerSeedBuilder<TCronTicker>> seeds)
+        {
+            if (seeds == null) throw new ArgumentNullException(nameof(seeds));
+            CronTickerSeeds.Add((builder, _) => seeds(builder));
+            return this;
+        }
+
+        /// <summary>
+        /// Declares cron tickers using application services, for example to read expressions from
+        /// configuration. Evaluated at startup when a new reconciliation epoch activates.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SeedCronTickers(
+            Action<CronTickerSeedBuilder<TCronTicker>, IServiceProvider> seeds)
+        {
+            if (seeds == null) throw new ArgumentNullException(nameof(seeds));
+            CronTickerSeeds.Add(seeds);
+            return this;
+        }
+
+        /// <summary>
+        /// Declares one-time work this application owns, with the same builder as
+        /// <c>ITimeTickerManager.AddChainAsync</c>. When a new reconciliation epoch activates, each declared
+        /// ticker is created once per key; a key that already has a ticker is left untouched. Restarts, epoch
+        /// bumps, and concurrent replicas never create duplicates. Change the key to run the work again.
+        /// Can be called more than once; declarations combine.
+        /// </summary>
+        /// <example>
+        /// <code>
+        /// options.SeedTimeTickers(tickers => tickers
+        ///     .Add("WarmCache")
+        ///     .Add("catalog-import-v1", ticker => ticker
+        ///         .RunAt(new DateTime(2026, 11, 1, 9, 0, 0, DateTimeKind.Utc))
+        ///         .UsingPolicy("Business hours")
+        ///         .StartWith("ImportCatalog", step => step.Retries = 3)
+        ///         .Then("RebuildSearchIndex")));
+        /// </code>
+        /// </example>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SeedTimeTickers(Action<TimeTickerSeedBuilder<TTimeTicker>> seeds)
+        {
+            if (seeds == null) throw new ArgumentNullException(nameof(seeds));
+            TimeTickerSeeds.Add((builder, _) => seeds(builder));
+            return this;
+        }
+
+        /// <summary>
+        /// Declares one-time work using application services. Evaluated at startup when a new
+        /// reconciliation epoch activates.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SeedTimeTickers(
+            Action<TimeTickerSeedBuilder<TTimeTicker>, IServiceProvider> seeds)
+        {
+            if (seeds == null) throw new ArgumentNullException(nameof(seeds));
+            TimeTickerSeeds.Add(seeds);
+            return this;
+        }
+
+        /// <summary>
+        /// Builds and validates every declared cron with the cron manager's rules. Runs at startup after
+        /// schedule policies are seeded, so a seeded cron may use a seeded policy.
+        /// </summary>
+        internal async System.Threading.Tasks.Task<IReadOnlyList<DefinedCronTickerSeed>> BuildCronTickerSeedsAsync(
+            IServiceProvider serviceProvider, System.Threading.CancellationToken cancellationToken)
+        {
+            var declarations = new CronTickerSeedBuilder<TCronTicker>();
+            foreach (var declare in CronTickerSeeds)
+                declare(declarations, serviceProvider);
+            if (declarations.Entries.Entries.Count == 0)
+                return Array.Empty<DefinedCronTickerSeed>();
+
+            var manager = CronSeedManager(serviceProvider);
+            var crons = BuildSeededCrons(declarations, serviceProvider);
+            var seeds = new List<DefinedCronTickerSeed>(crons.Count);
+
+            foreach (var (key, cron) in crons)
+            {
+                await ValidateSeedAsync(CronTickerSeedBuilder<TCronTicker>.Kind, key,
+                    () => manager.ValidateSeededCronAsync(cron, cancellationToken)).ConfigureAwait(false);
+                seeds.Add(DefinedCronTickerSeed.FromValidatedCron(key, cron));
+            }
+
+            return seeds;
+        }
+
+        private static Managers.TickerManager<TTimeTicker, TCronTicker> CronSeedManager(IServiceProvider serviceProvider)
+            => BuiltInManager(serviceProvider.GetRequiredService<ICronTickerManager<TCronTicker>>())
+               ?? throw new InvalidOperationException("Seeded cron tickers require the built-in cron manager.");
+
+        // UseApplicationDbContext registers staging managers that wrap the built-in one.
+        private static Managers.TickerManager<TTimeTicker, TCronTicker> BuiltInManager(object manager)
+        {
+            while (manager is ITickerManagerDecorator decorator)
+                manager = decorator.InnerManager;
+            return manager as Managers.TickerManager<TTimeTicker, TCronTicker>;
+        }
+
+        /// <summary>Builds every declared cron and resolves configuration placeholders in its expression.</summary>
+        private static List<(string Key, TCronTicker Entity)> BuildSeededCrons(
+            CronTickerSeedBuilder<TCronTicker> declarations, IServiceProvider serviceProvider)
+        {
+            var configuration = serviceProvider.GetService<Microsoft.Extensions.Configuration.IConfiguration>();
+            var crons = declarations.Entries.Build(CronTickerSeedBuilder<TCronTicker>.Kind,
+                () => new Managers.CronTickerChainBuilder<TCronTicker>(() => new TCronTicker()),
+                builder => builder.Build(), cron => cron.Function);
+            foreach (var (key, cron) in crons)
+                cron.Expression = ResolveSeedExpression(key, cron.Expression, configuration);
+            return crons;
+        }
+
+        /// <summary>
+        /// Declares the schedule policies this application owns. When startup reconciles, each is created or
+        /// updated by name before seeded crons and time tickers are validated, so seeds can use them. Changing
+        /// a declaration changes the startup manifest, so the next deployment applies it automatically.
+        /// Can be called more than once; declarations combine.
+        /// </summary>
+        /// <example>
+        /// <code>
+        /// options.SeedSchedulePolicies(policies => policies
+        ///     .Add(SchedulePolicy.Create("Business hours")
+        ///         .InTimeZone("Europe/Berlin")
+        ///         .AllowWeekdays(DayOfWeek.Monday, DayOfWeek.Tuesday, DayOfWeek.Wednesday, DayOfWeek.Thursday, DayOfWeek.Friday)
+        ///         .AllowBetween(new TimeOnly(8, 0), new TimeOnly(18, 0))));
+        /// </code>
+        /// </example>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SeedSchedulePolicies(Action<SchedulePolicySeedBuilder> seeds)
+        {
+            if (seeds == null) throw new ArgumentNullException(nameof(seeds));
+            SchedulePolicySeeds.Add((builder, _) => seeds(builder));
+            return this;
+        }
+
+        /// <summary>Declares schedule policies using application services.</summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SeedSchedulePolicies(
+            Action<SchedulePolicySeedBuilder, IServiceProvider> seeds)
+        {
+            if (seeds == null) throw new ArgumentNullException(nameof(seeds));
+            SchedulePolicySeeds.Add(seeds);
+            return this;
+        }
+
+        private SchedulePolicySeedBuilder BuildSchedulePolicySeeds(IServiceProvider serviceProvider)
+        {
+            var declarations = new SchedulePolicySeedBuilder();
+            foreach (var declare in SchedulePolicySeeds)
+                declare(declarations, serviceProvider);
+            return declarations;
+        }
+
+        internal async System.Threading.Tasks.Task SeedSchedulePoliciesAsync(
+            IServiceProvider serviceProvider, System.Threading.CancellationToken cancellationToken)
+        {
+            var manager = serviceProvider.GetRequiredService<ISchedulePolicyManager>();
+            foreach (var policy in BuildSchedulePolicySeeds(serviceProvider).Policies)
+            {
+                try
+                {
+                    await manager.UpsertAsync(policy.Copy(), cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    throw new InvalidOperationException(
+                        $"Seeded schedule policy '{policy.Name}' is invalid: {exception.Message}", exception);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Checks, before an epoch is claimed, that every schedule policy a seed uses is declared with
+        /// <c>SeedSchedulePolicies</c> or already stored. A claim fences the running deployment, so a seed that
+        /// can only fail during reconciliation (for example, its policy was deleted in the dashboard) must stop
+        /// the claim instead. Skipped when a <c>UseSchedulePolicySeeder</c> callback may create policies.
+        /// </summary>
+        internal async System.Threading.Tasks.Task PreflightSeedsAsync(
+            IServiceProvider serviceProvider, System.Threading.CancellationToken cancellationToken)
+        {
+            if (SchedulePolicySeederAction != null)
+                return;
+
+            var referenced = new List<(string Kind, string Key, string Policy)>();
+            var cronDeclarations = new CronTickerSeedBuilder<TCronTicker>();
+            foreach (var declare in CronTickerSeeds)
+                declare(cronDeclarations, serviceProvider);
+            if (SeedDefinedCronTickers && cronDeclarations.Entries.Entries.Count > 0)
+                referenced.AddRange(BuildSeededCrons(cronDeclarations, serviceProvider)
+                    .Where(x => !string.IsNullOrWhiteSpace(x.Entity.SchedulePolicyName))
+                    .Select(x => (CronTickerSeedBuilder<TCronTicker>.Kind, x.Key, x.Entity.SchedulePolicyName)));
+            var timeDeclarations = new TimeTickerSeedBuilder<TTimeTicker>();
+            foreach (var declare in TimeTickerSeeds)
+                declare(timeDeclarations, serviceProvider);
+            if (timeDeclarations.Entries.Entries.Count > 0)
+                referenced.AddRange(timeDeclarations.Entries.Build(TimeTickerSeedBuilder<TTimeTicker>.Kind,
+                        () => new Managers.TimeTickerChainBuilder<TTimeTicker>(() => new TTimeTicker()),
+                        builder => builder.Build(), ticker => ticker.Function)
+                    .Where(x => !string.IsNullOrWhiteSpace(x.Entity.SchedulePolicyName))
+                    .Select(x => (TimeTickerSeedBuilder<TTimeTicker>.Kind, x.Key, x.Entity.SchedulePolicyName)));
+            if (referenced.Count == 0)
+                return;
+
+            var available = new HashSet<string>(
+                BuildSchedulePolicySeeds(serviceProvider).Policies.Select(x => SchedulePolicyNames.Normalize(x.Name)),
+                StringComparer.Ordinal);
+            var store = serviceProvider.GetService<ISchedulePolicyStore>();
+            if (store != null)
+            {
+                try
+                {
+                    foreach (var policy in await store.ListSchedulePoliciesAsync(cancellationToken).ConfigureAwait(false))
+                        available.Add(SchedulePolicyNames.Normalize(policy.Name));
+                }
+                catch (NotSupportedException)
+                {
+                    // Reconciliation reports the provider's missing policy support with the seed's key.
+                    return;
+                }
+            }
+
+            foreach (var (kind, key, policy) in referenced)
+                if (!available.Contains(SchedulePolicyNames.Normalize(policy)))
+                    throw new InvalidOperationException(
+                        $"Seeded {kind} '{key}' is invalid: Schedule policy '{policy}' does not exist. " +
+                        "Declare it with SeedSchedulePolicies(...) or create it before deploying.");
+        }
+
+        /// <summary>
+        /// Fingerprints this host's startup inputs: the TickerQ version, every registered function with its
+        /// request and result contracts, and the declared policy, cron, and time seeds. Declarations are built
+        /// and checked here, before startup claims an epoch, so a broken declaration fails startup without
+        /// fencing the running deployment. Checks that need stored policies run later, during reconciliation.
+        /// </summary>
+        internal System.Threading.Tasks.Task<string> BuildStartupManifestAsync(
+            IServiceProvider serviceProvider, System.Threading.CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var manifest = new StartupManifestBuilder()
+                .Section("tickerq").Text(StartupManifestBuilder.TickerQVersion())
+                .Functions();
+
+            manifest.Section("policies");
+            foreach (var policy in BuildSchedulePolicySeeds(serviceProvider).Policies
+                         .OrderBy(x => SchedulePolicyNames.Normalize(x.Name), StringComparer.Ordinal))
+                manifest.Policy(policy);
+
+            manifest.Section("crons").Flag(SeedDefinedCronTickers).Flag(AdoptAllLegacyDefinedCronTickers);
+            foreach (var owner in LegacyDefinedCronOwnership.OrderBy(x => x.Key, StringComparer.Ordinal))
+                manifest.Text(owner.Key).Text(owner.Value);
+            var cronDeclarations = new CronTickerSeedBuilder<TCronTicker>();
+            foreach (var declare in CronTickerSeeds)
+                declare(cronDeclarations, serviceProvider);
+            if (cronDeclarations.Entries.Entries.Count > 0)
+            {
+                var manager = CronSeedManager(serviceProvider);
+                foreach (var (key, cron) in BuildSeededCrons(cronDeclarations, serviceProvider)
+                             .OrderBy(x => x.Key, StringComparer.Ordinal))
+                {
+                    try
+                    {
+                        manager.PrevalidateSeededCron(cron);
+                    }
+                    catch (TickerQ.Utilities.Exceptions.TickerValidatorException exception)
+                    {
+                        throw new InvalidOperationException(
+                            $"Seeded {CronTickerSeedBuilder<TCronTicker>.Kind} '{key}' is invalid: {exception.Message}", exception);
+                    }
+                    manifest.Cron(key, cron);
+                }
+            }
+
+            // Stored time tickers are never updated by seeding, so only the keys decide whether there is
+            // new work to create.
+            manifest.Section("time");
+            var timeDeclarations = new TimeTickerSeedBuilder<TTimeTicker>();
+            foreach (var declare in TimeTickerSeeds)
+                declare(timeDeclarations, serviceProvider);
+            foreach (var key in timeDeclarations.Entries.Build(TimeTickerSeedBuilder<TTimeTicker>.Kind,
+                             () => new Managers.TimeTickerChainBuilder<TTimeTicker>(() => new TTimeTicker()),
+                             builder => builder.Build(), ticker => ticker.Function)
+                         .Select(x => x.Key).OrderBy(x => x, StringComparer.Ordinal))
+                manifest.Text(key);
+
+            return System.Threading.Tasks.Task.FromResult(manifest.Build());
+        }
+
+        /// <summary>
+        /// Creates every declared time ticker whose key has no ticker yet. All new declarations are validated
+        /// before any is written; each is then inserted under a deterministic id derived from its key, so
+        /// concurrent replicas converge on one ticker per key. Runs at startup after schedule policies and crons are seeded.
+        /// </summary>
+        internal async System.Threading.Tasks.Task SeedTimeTickersAsync(
+            IServiceProvider serviceProvider, System.Threading.CancellationToken cancellationToken)
+        {
+            var declarations = new TimeTickerSeedBuilder<TTimeTicker>();
+            foreach (var declare in TimeTickerSeeds)
+                declare(declarations, serviceProvider);
+            if (declarations.Entries.Entries.Count == 0)
+                return;
+
+            var manager = BuiltInManager(serviceProvider.GetRequiredService<ITimeTickerManager<TTimeTicker>>())
+                ?? throw new InvalidOperationException("Seeded time tickers require the built-in time ticker manager.");
+            List<(string Key, TTimeTicker Ticker)> Build() => declarations.Entries.Build(TimeTickerSeedBuilder<TTimeTicker>.Kind,
+                () => new Managers.TimeTickerChainBuilder<TTimeTicker>(() => new TTimeTicker()),
+                builder => builder.Build(), ticker => ticker.Function);
+
+            var missing = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var (key, ticker) in Build())
+            {
+                // A stored ticker is never touched again, so it is not re-validated: a policy that blocks
+                // "now" must not fail startup for work that already exists.
+                if (await manager.TimeTickerKeyExistsAsync(key, cancellationToken).ConfigureAwait(false))
+                    continue;
+                await ValidateSeedAsync(TimeTickerSeedBuilder<TTimeTicker>.Kind, key,
+                    () => manager.ValidateSeededTimeAsync(ticker, cancellationToken)).ConfigureAwait(false);
+                missing.Add(key);
+            }
+
+            // Validation stamps and may reschedule the entity, so the insert uses a freshly built one.
+            foreach (var (key, ticker) in Build())
+            {
+                if (!missing.Contains(key)) continue;
+                var result = await manager.AddSeededTimeTickerAsync(key, ticker, cancellationToken).ConfigureAwait(false);
+                if (!result.IsSucceeded)
+                    throw new InvalidOperationException(
+                        $"Seeded time ticker '{key}' could not be created: {result.Exception?.Message}", result.Exception);
+            }
+        }
+
+        private static async System.Threading.Tasks.Task ValidateSeedAsync(
+            string kind, string key, Func<System.Threading.Tasks.Task> validate)
+        {
+            try
+            {
+                await validate().ConfigureAwait(false);
+            }
+            catch (TickerQ.Utilities.Exceptions.TickerValidatorException exception)
+            {
+                throw new InvalidOperationException($"Seeded {kind} '{key}' is invalid: {exception.Message}", exception);
+            }
+        }
+
+        private static string ResolveSeedExpression(string key, string expression,
+            Microsoft.Extensions.Configuration.IConfiguration configuration)
+        {
+            if (expression is { Length: > 2 } && expression[0] == '%' && expression[^1] == '%')
+            {
+                var configurationKey = expression[1..^1];
+                var resolved = configuration?[configurationKey];
+                if (string.IsNullOrWhiteSpace(resolved))
+                    throw new InvalidOperationException(
+                        $"Seeded cron ticker '{key}' uses configuration key '{configurationKey}', which has no value.");
+                expression = resolved.Trim();
+            }
+
+            if (!CronExpression.TryParse(expression, out _))
+                throw new InvalidOperationException($"Seeded cron ticker '{key}' has an invalid cron expression '{expression}'.");
+            return expression;
         }
 
         /// <summary>
@@ -230,13 +619,33 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
+        /// Assigns a namespace made of <paramref name="applicationName"/> and the host environment, for example
+        /// <c>orders-production</c> or <c>orders-development</c>. Environments sharing one store, such as a developer
+        /// machine connected to a demo database, then never share jobs, schedules, or the reconciliation epoch.
+        /// Every service of one application must run in the same environment name to share its namespace.
+        /// </summary>
+        /// <param name="applicationName">The application's name, shared by all of its services and replicas.</param>
+        /// <param name="environment">The host environment; its <c>EnvironmentName</c> is appended in lower case.</param>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseApplicationNamespace(
+            string applicationName, IHostEnvironment environment)
+        {
+            if (string.IsNullOrWhiteSpace(applicationName))
+                throw new ArgumentException("A non-empty application name is required.", nameof(applicationName));
+            if (environment == null) throw new ArgumentNullException(nameof(environment));
+            if (string.IsNullOrWhiteSpace(environment.EnvironmentName))
+                throw new ArgumentException("The host environment has no EnvironmentName.", nameof(environment));
+            return UseApplicationNamespace(
+                $"{applicationName.Trim()}-{environment.EnvironmentName.Trim().ToLowerInvariant()}");
+        }
+
+        /// <summary>
         /// Maps one legacy, pre-namespace code-defined Cron function to the single application namespace
         /// that is allowed to adopt it in place during reconciliation.
         /// </summary>
         /// <param name="function">The exact registered function name on the legacy row.</param>
         /// <param name="ownerApplicationNamespace">
         /// The stable namespace configured by the owning application with
-        /// <see cref="UseApplicationNamespace"/>.
+        /// <see cref="UseApplicationNamespace(string)"/>.
         /// </param>
         /// <returns>This builder.</returns>
         /// <exception cref="ArgumentException">
@@ -288,9 +697,11 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
-        /// Selects the positive, monotonic deployment epoch used to fence startup reconciliation.
-        /// Required when background services are enabled. Keep it stable for identical deployments and
-        /// increase it whenever startup reconciliation inputs or semantics change.
+        /// Takes manual control of the deployment epoch that fences startup reconciliation. Optional: without
+        /// it, TickerQ fingerprints each host's startup inputs (functions, request and result contracts, seeds,
+        /// TickerQ version) and claims a new epoch whenever they change. With it, keep the value stable for
+        /// identical deployments and increase it yourself whenever startup inputs change; a host logs a warning
+        /// when its inputs differ from those of the activated epoch.
         /// </summary>
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseReconciliationEpoch(long epoch)
         {
@@ -384,7 +795,9 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
-        /// Configure a custom seeder for time tickers, executed on application startup.
+        /// Configure a custom seeder for time tickers, executed when a new reconciliation epoch activates.
+        /// Its adds run again on every epoch; use
+        /// <see cref="SeedTimeTickers(Action{TimeTickerSeedBuilder{TTimeTicker}})"/> for work that must be created once.
         /// </summary>
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(
             Func<ITimeTickerManager<TTimeTicker>, System.Threading.Tasks.Task> timeSeeder)
@@ -411,7 +824,9 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
-        /// Configure a custom seeder for cron tickers, executed on application startup.
+        /// Configure a custom seeder for cron tickers, executed when a new reconciliation epoch activates.
+        /// Crons added through the manager are not keyed, so they are added again on every epoch.
+        /// Prefer <see cref="SeedCronTickers(Action{CronTickerSeedBuilder})"/> for crons the application owns.
         /// </summary>
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(
             Func<ICronTickerManager<TCronTicker>, System.Threading.Tasks.Task> cronSeeder)
@@ -481,6 +896,7 @@ namespace TickerQ.Utilities
         private readonly string _executionOwnerNonce = Guid.NewGuid().ToString("N");
         private bool _runtimeActivationScopeBound;
         private long _reconciliationEpoch = 1;
+        private long _runtimeActivationEpoch;
 
         /// <summary>
         /// The immutable application scope this scheduler instance admits for runtime work. It is bound
@@ -489,9 +905,42 @@ namespace TickerQ.Utilities
         /// </summary>
         internal ReconciliationActivationScope RuntimeActivationScope { get; private set; }
         internal TickerQRuntimePartition RuntimePartition { get; private set; }
-        internal long RuntimeActivationEpoch { get; private set; }
+        /// <summary>
+        /// The epoch this scheduler currently executes against. With an explicit
+        /// <c>UseReconciliationEpoch</c> it is fixed at registration. Otherwise it starts at 0 (fenced) and
+        /// startup, or the activation monitor, resolves it from the durable activation record.
+        /// </summary>
+        internal long RuntimeActivationEpoch => Interlocked.Read(ref _runtimeActivationEpoch);
         internal bool RuntimeSchedulerEnabled { get; private set; }
         internal bool HasRuntimeActivationScopeBinding => _runtimeActivationScopeBound;
+
+        /// <summary>
+        /// True when no explicit epoch was configured for a scheduler host, so TickerQ derives the epoch
+        /// from the startup manifest fingerprint.
+        /// </summary>
+        internal bool AutomaticReconciliationEpoch { get; private set; }
+
+        /// <summary>
+        /// Points an automatic-epoch scheduler at <paramref name="epoch"/>. Epochs only move forward; 0 is
+        /// never a valid target because it means fenced.
+        /// </summary>
+        internal void ResolveRuntimeActivationEpoch(long epoch)
+        {
+            if (!AutomaticReconciliationEpoch)
+                throw new InvalidOperationException(
+                    "The reconciliation epoch was configured explicitly with UseReconciliationEpoch and cannot be resolved at runtime.");
+            if (epoch <= 0) throw new ArgumentOutOfRangeException(nameof(epoch));
+            while (true)
+            {
+                var current = Interlocked.Read(ref _runtimeActivationEpoch);
+                if (epoch < current)
+                    throw new InvalidOperationException(
+                        $"The runtime activation epoch cannot move backwards from {current} to {epoch}.");
+                if (Interlocked.CompareExchange(ref _runtimeActivationEpoch, epoch, current) == current)
+                    break;
+            }
+            Interlocked.Exchange(ref _reconciliationEpoch, epoch);
+        }
 
         /// <summary>
         /// The configured application namespace that isolates this scheduler's jobs and cluster state.
@@ -513,10 +962,12 @@ namespace TickerQ.Utilities
                     "The TickerQ runtime activation scope is already bound and cannot be redirected.");
             }
 
+            if (epoch < 0) throw new ArgumentOutOfRangeException(nameof(epoch));
             RuntimeActivationScope = scope;
             RuntimePartition = partition;
-            RuntimeActivationEpoch = epoch;
+            _runtimeActivationEpoch = epoch;
             RuntimeSchedulerEnabled = schedulerEnabled;
+            AutomaticReconciliationEpoch = epoch == 0 && schedulerEnabled && scope != null;
             _reconciliationEpoch = epoch;
             _runtimeActivationScopeBound = true;
         }
@@ -547,12 +998,13 @@ namespace TickerQ.Utilities
         /// </summary>
         public string ExecutionOwnerId => $"{NodeIdentifier}:{Environment.ProcessId}:{_executionOwnerNonce}";
         /// <summary>
-        /// The exact reconciliation epoch this scheduler binary can execute against. Persistence providers
+        /// The exact reconciliation epoch this scheduler currently executes against. Persistence providers
         /// use it to fail closed when a shared store is activating or has published a different epoch.
+        /// With automatic epochs it is 0 until startup resolves it.
         /// </summary>
         public long ReconciliationEpoch
         {
-            get => _reconciliationEpoch;
+            get => Interlocked.Read(ref _reconciliationEpoch);
             internal set
             {
                 if (_runtimeActivationScopeBound && value != RuntimeActivationEpoch)

@@ -33,7 +33,11 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     private readonly string _boundActivationMetadataKey;
     private readonly bool _requiresActivatedRuntimeAdmission;
     private readonly bool _runtimeAdmissionMisconfigured;
-    private readonly long _runtimeActivationEpoch;
+    private readonly long _configuredActivationEpoch;
+    // An automatic epoch is resolved after construction; an explicit one is fixed for the process.
+    private long _runtimeActivationEpoch => _schedulerOptions.AutomaticReconciliationEpoch
+        ? _schedulerOptions.RuntimeActivationEpoch
+        : _configuredActivationEpoch;
     protected string RuntimeActivationMetadataKey => _boundActivationMetadataKey;
     protected long RuntimeActivationEpoch => _runtimeActivationEpoch;
     protected bool HasRuntimeActivationScopeBinding => _requiresActivatedRuntimeAdmission;
@@ -143,7 +147,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                                              _schedulerOptions.RuntimeActivationScope != null;
         _runtimeAdmissionMisconfigured = _schedulerOptions.RuntimeSchedulerEnabled &&
                                         _schedulerOptions.RuntimeActivationScope == null;
-        _runtimeActivationEpoch = _requiresActivatedRuntimeAdmission
+        _configuredActivationEpoch = _requiresActivatedRuntimeAdmission
             ? _schedulerOptions.RuntimeActivationEpoch
             : _schedulerOptions.ReconciliationEpoch;
         if (_requiresActivatedRuntimeAdmission)
@@ -192,9 +196,17 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
 
     public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
         ReconciliationActivationScope scope, long targetEpoch, CancellationToken cancellationToken = default)
+        => BeginReconciliationActivationEpochAsync(scope, targetEpoch, null, cancellationToken);
+
+    public bool SupportsActivationManifest => true;
+
+    public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
+        ReconciliationActivationScope scope, long targetEpoch, string manifest,
+        CancellationToken cancellationToken = default)
     {
-        var key = ActivationKeyFor(scope);
-        return MutateActivationStateAsync(key, targetEpoch, null, "begin", cancellationToken);
+        ValidateTargetEpoch(targetEpoch);
+        ActivationManifests.Validate(manifest);
+        return MutateActivationStateAsync(ActivationKeyFor(scope), targetEpoch, null, "begin", cancellationToken, manifest);
     }
 
     public Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(
@@ -229,18 +241,30 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     {
         cancellationToken.ThrowIfCancellationRequested();
         EnsureReconciliationActivationTopology();
-        HashEntry[] entries;
+        RedisResult result;
         try
         {
-            entries = await Db.HashGetAllAsync(activationMetadataKey).ConfigureAwait(false);
+            // One script reads the state and its manifest atomically, so a concurrent claim is never
+            // observed half-applied.
+            result = await Db.ScriptEvaluateAsync(MutateReconciliationActivationScript,
+                [(RedisKey)activationMetadataKey, (RedisKey)ManifestKeyFor(activationMetadataKey)],
+                [(RedisValue)"read", (RedisValue)"0", (RedisValue)string.Empty, (RedisValue)string.Empty,
+                 (RedisValue)ActivationManifests.MaxHistory]).ConfigureAwait(false);
         }
-        catch (RedisServerException ex) when (ex.Message.Contains("WRONGTYPE", StringComparison.OrdinalIgnoreCase))
+        catch (RedisServerException ex) when (ex.Message.Contains(
+                   "activation metadata is corrupt", StringComparison.OrdinalIgnoreCase))
         {
-            throw;
+            throw new InvalidDataException("Redis reconciliation activation metadata is corrupt.", ex);
         }
         cancellationToken.ThrowIfCancellationRequested();
-        return ParseActivationState(entries);
+        var state = ParseActivationResult((RedisResult[])result);
+        return state.Epoch == 0 && state.Phase == ActivationEpochPhase.Pending && state.Checkpoint == null &&
+               state.Manifest == null
+            ? ActivationEpochState.PreEpoch
+            : state;
     }
+
+    private static string ManifestKeyFor(string activationMetadataKey) => activationMetadataKey + ":manifest";
 
     public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
         long targetEpoch, CancellationToken cancellationToken = default)
@@ -278,7 +302,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
 
     private async Task<ActivationEpochState> MutateActivationStateAsync(
         string activationMetadataKey, long targetEpoch, string checkpoint, string operation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, string manifest = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         EnsureReconciliationActivationTopology();
@@ -286,9 +310,10 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         try
         {
             result = await Db.ScriptEvaluateAsync(MutateReconciliationActivationScript,
-                [(RedisKey)activationMetadataKey],
+                [(RedisKey)activationMetadataKey, (RedisKey)ManifestKeyFor(activationMetadataKey)],
                 [(RedisValue)operation, (RedisValue)targetEpoch,
-                 (RedisValue)(checkpoint ?? string.Empty)]).ConfigureAwait(false);
+                 (RedisValue)(checkpoint ?? string.Empty), (RedisValue)(manifest ?? string.Empty),
+                 (RedisValue)ActivationManifests.MaxHistory]).ConfigureAwait(false);
         }
         catch (RedisServerException ex) when (ex.Message.Contains(
                    "activation metadata is corrupt", StringComparison.OrdinalIgnoreCase))
@@ -306,39 +331,20 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
 
     private static ActivationEpochState ParseActivationResult(RedisResult[] values)
     {
-        if (values.Length != 3 ||
+        if (values.Length != 5 ||
             !long.TryParse(values[0].ToString(), out var epoch) ||
             !int.TryParse(values[1].ToString(), out var phaseValue) ||
             !Enum.IsDefined(typeof(ActivationEpochPhase), phaseValue))
             throw new InvalidDataException("Redis reconciliation activation script returned an invalid state.");
         var checkpoint = values[2].ToString();
+        var manifest = values[3].ToString();
         return new ActivationEpochState
         {
             Epoch = epoch,
             Phase = (ActivationEpochPhase)phaseValue,
-            Checkpoint = checkpoint.Length == 0 ? null : checkpoint
-        };
-    }
-
-    private static ActivationEpochState ParseActivationState(HashEntry[] entries)
-    {
-        if (entries.Length == 0) return ActivationEpochState.PreEpoch;
-        if (entries.Length != 3)
-            throw new InvalidDataException(
-                "Redis reconciliation activation metadata is corrupt; expected exactly epoch, phase, and checkpoint fields.");
-        var fields = entries.ToDictionary(x => x.Name.ToString(), x => x.Value.ToString(), StringComparer.Ordinal);
-        if (!fields.TryGetValue("epoch", out var epochText) ||
-            !long.TryParse(epochText, out var epoch) || epoch < 0 ||
-            !fields.TryGetValue("phase", out var phaseText) ||
-            !int.TryParse(phaseText, out var phaseValue) ||
-            !Enum.IsDefined(typeof(ActivationEpochPhase), phaseValue) ||
-            !fields.TryGetValue("checkpoint", out var checkpoint))
-            throw new InvalidDataException("Redis reconciliation activation metadata is corrupt.");
-        return new ActivationEpochState
-        {
-            Epoch = epoch,
-            Phase = (ActivationEpochPhase)phaseValue,
-            Checkpoint = checkpoint.Length == 0 ? null : checkpoint
+            Checkpoint = checkpoint.Length == 0 ? null : checkpoint,
+            Manifest = manifest.Length == 0 ? null : manifest,
+            ManifestHistory = ActivationManifests.SplitHistory(values[4].ToString())
         };
     }
 
@@ -1762,11 +1768,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             {
                 var legacy = existingList.Where(x => !string.IsNullOrEmpty(x.InitIdentifier)
                     && CronSeedIdentity.CanonicallyEquals(x.Function, functionGroup.Key) && x.SeedOwnerNamespace == null
-                    && (x.SeedKey == null
-                        || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
-                        || CronSeedIdentity.LegacyAdoptionKeys(
-                            manifest.ApplicationNamespace, functionGroup.Single().StableDefinitionId)
-                            .Contains(x.SeedKey, StringComparer.Ordinal))).ToArray();
+                    && x.SeedKey == null).ToArray();
                 if (legacy.Length == 0) continue;
                 if (!manifest.TryGetLegacyOwner(functionGroup.Key, out var explicitOwner))
                     throw new InvalidOperationException(
@@ -1834,23 +1836,15 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                 continue;
 
             var seedKey = manifest.SeedKeyFor(seed);
-            var legacyAdoptionKeys = manifest.IsLegacyGlobal
-                ? []
-                : CronSeedIdentity.LegacyAdoptionKeys(manifest.ApplicationNamespace, seed.StableDefinitionId);
-            var acceptedSeedKeys = manifest.IsLegacyGlobal
-                ? []
-                : CronSeedIdentity.AcceptedSeedKeys(manifest.ApplicationNamespace, seed.StableDefinitionId);
 
             var group = manifest.IsLegacyGlobal
                 ? (byFunction.TryGetValue(seed.Function, out var legacyGroup) ? legacyGroup : null)
                 : existingList.Where(x => !string.IsNullOrEmpty(x.InitIdentifier)
-                        && ((acceptedSeedKeys.Contains(x.SeedKey, StringComparer.Ordinal)
+                        && ((string.Equals(x.SeedKey, seedKey, StringComparison.Ordinal)
                              && CronSeedIdentity.CanonicallyEquals(x.SeedOwnerNamespace, manifest.ApplicationNamespace))
                             || (CronSeedIdentity.CanonicallyEquals(x.Function, seed.Function) && x.SeedOwnerNamespace == null
                                 && manifest.MayAdoptLegacy(seed.Function)
-                                && (x.SeedKey == null
-                                    || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
-                                    || legacyAdoptionKeys.Contains(x.SeedKey, StringComparer.Ordinal)))))
+                                && x.SeedKey == null)))
                     .OrderBy(x => x.Id).ToList();
 
             if (group is { Count: > 0 })
@@ -1877,44 +1871,11 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                     changed = true;
                 }
 
-                if (!string.Equals(cron.Expression, seed.Expression, StringComparison.Ordinal))
-                {
-                    cron.Expression = seed.Expression;
-                    changed = true;
-                    definitionChanged = true;
-                }
-
-                // Reconcile authoritative contract identity onto seeded rows only; legacy/dashboard
-                // rows (no seed InitIdentifier) keep their own identity.
-                if (!string.IsNullOrEmpty(cron.InitIdentifier)
-                    && !seed.MatchesIdentity(cron.RequestContractVersion, cron.RequestContractFingerprint))
-                {
-                    cron.RequestContractVersion = seed.RequestContractVersion;
-                    cron.RequestContractFingerprint = seed.RequestContractFingerprint;
-                    changed = true;
-                    definitionChanged = true;
-                }
-
-                if (cron.Retries != seed.Retries)
-                {
-                    cron.Retries = seed.Retries;
-                    changed = true;
-                    definitionChanged = true;
-                }
-
-                if (!(cron.RetryIntervals ?? []).SequenceEqual(seed.RetryIntervals ?? []))
-                {
-                    cron.RetryIntervals = seed.RetryIntervals;
-                    changed = true;
-                    definitionChanged = true;
-                }
-
-                if (cron.TimeoutSeconds != seed.TimeoutSeconds)
-                {
-                    cron.TimeoutSeconds = seed.TimeoutSeconds;
-                    changed = true;
-                    definitionChanged = true;
-                }
+                // Expression, contract identity (seeded rows only), retries, timeout, and the full
+                // SeedCronTickers definition: time zone, policy, request, chain, late start, catch-up, overlap.
+                var seedChange = DefinedCronSeedApplier.Apply(cron, seed, !string.IsNullOrEmpty(cron.InitIdentifier));
+                changed |= seedChange.Changed;
+                definitionChanged |= seedChange.DefinitionChanged;
 
                 if (definitionChanged)
                 {
@@ -1985,13 +1946,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                     InitIdentifier = $"{seedPrefix}{seed.Function}",
                     CreatedAt = now,
                     UpdatedAt = now,
-                    Request = [],
-                    RequestContractVersion = seed.RequestContractVersion,
-                    RequestContractFingerprint = seed.RequestContractFingerprint,
-                    Retries = seed.Retries,
-                    RetryIntervals = seed.RetryIntervals,
-                    TimeoutSeconds = seed.TimeoutSeconds
                 };
+                DefinedCronSeedApplier.Initialize(entity, seed);
                 await WriteCronDefinitionAtomicAsync(entity, cancellationToken, allowActivating: true,
                     expectedDefinitionRevision: 0).ConfigureAwait(false);
             }

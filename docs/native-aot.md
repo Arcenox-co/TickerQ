@@ -20,7 +20,6 @@ var builder = WebApplication.CreateSlimBuilder(args);
 builder.Services.AddTickerQ(options =>
 {
     options.UseApplicationNamespace("orders-production");
-    options.UseReconciliationEpoch(1);
     options.WithJsonContext(JobJsonContext.Default);
     options.AddDashboard(dashboard =>
         dashboard.AllowAnonymousDashboard().SetReadOnly());

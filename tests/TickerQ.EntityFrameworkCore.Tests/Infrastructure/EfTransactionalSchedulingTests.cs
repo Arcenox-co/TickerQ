@@ -58,7 +58,8 @@ public sealed partial class EfTransactionalSchedulingTests
 
         public Harness(int registration = 0, IInterceptor? interceptor = null, bool withStore = true,
             Action<DbContextOptionsBuilder>? configureProvider = null, bool runtimeEnabled = false, bool retry = false,
-            bool legacyPartition = false, bool withCronCache = false)
+            bool legacyPartition = false, bool withCronCache = false,
+            Action<TickerOptionsBuilder<TimeTickerEntity, CronTickerEntity>>? configureTickerQ = null)
         {
             TickerFunctionProvider.RegisterFunctions(new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
             {
@@ -86,6 +87,7 @@ public sealed partial class EfTransactionalSchedulingTests
                 if (!legacyPartition) options.UseApplicationNamespace("staged-jobs");
                 if (withStore) options.AddOperationalStore(ef => ef
                     .UseApplicationDbContext<AppDbContext>(ConfigurationType.UseModelCustomizer));
+                configureTickerQ?.Invoke(options);
             });
             services.AddSingleton(Notifications);
             services.AddSingleton(Scheduler);

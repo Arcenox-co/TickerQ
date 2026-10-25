@@ -12,9 +12,6 @@ namespace TickerQ.Utilities.Models
     {
         private const string DeterministicIdNamespace = "tickerq:cron-seed:v1:";
         private const string PersistedKeyPrefix = "tq:cron-seed:v2:";
-        private const int MaxCanonicalVariantsPerPart = 256;
-        private const int MaxAcceptedSeedKeys = 4096;
-        private const int MaxLegacyAdoptionKeys = MaxAcceptedSeedKeys * 3;
         public const int MaxIdentityUtf8Bytes = 512;
         public const int PersistedKeyLength = 80;
 
@@ -29,86 +26,6 @@ namespace TickerQ.Utilities.Models
             return BuildSeedKey(application, definition);
         }
 
-        /// <summary>Canonical and pre-NFC v2 hashes accepted for in-place namespaced adoption.</summary>
-        public static string[] AcceptedSeedKeys(string applicationNamespace, string stableDefinitionId)
-        {
-            var application = ValidatePart(applicationNamespace, nameof(applicationNamespace));
-            var definition = ValidatePart(stableDefinitionId, nameof(stableDefinitionId));
-            var keys = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var app in CanonicalVariants(application))
-            foreach (var def in CanonicalVariants(definition))
-            {
-                keys.Add(BuildSeedKey(Encoding.UTF8.GetBytes(app), Encoding.UTF8.GetBytes(def)));
-                if (keys.Count > MaxAcceptedSeedKeys)
-                    throw new InvalidOperationException(
-                        "Cron seed compatibility identity has too many canonical representations to adopt safely.");
-            }
-            return keys.ToArray();
-        }
-
-        private static string[] CanonicalVariants(string canonical)
-        {
-            var seen = new HashSet<string>(StringComparer.Ordinal) { canonical };
-            var pending = new Queue<string>();
-            var decomposed = canonical.Normalize(NormalizationForm.FormD);
-            if (seen.Add(decomposed)) pending.Enqueue(decomposed);
-            else pending.Enqueue(canonical);
-
-            while (pending.Count > 0)
-            {
-                var value = pending.Dequeue();
-                var boundaries = new List<int> { 0 };
-                for (var index = 0; index < value.Length;)
-                {
-                    index += char.IsSurrogatePair(value, index) ? 2 : 1;
-                    boundaries.Add(index);
-                }
-
-                bool TryAdd(string candidate)
-                {
-                    if (!string.Equals(candidate.Normalize(NormalizationForm.FormC), canonical,
-                            StringComparison.Ordinal) || !seen.Add(candidate))
-                        return false;
-                    if (seen.Count > MaxCanonicalVariantsPerPart)
-                        throw new InvalidOperationException(
-                            "Cron seed identity has too many canonical representations to adopt safely.");
-                    pending.Enqueue(candidate);
-                    return true;
-                }
-
-                // Pre-normalization callers could supply canonically equivalent combining marks in
-                // noncanonical order. Adjacent swaps plus NFC composition traverse that complete,
-                // bounded equivalence class; the normalization check rejects non-equivalent swaps.
-                for (var index = 0; index < boundaries.Count - 2; index++)
-                {
-                    var firstStart = boundaries[index];
-                    var firstEnd = boundaries[index + 1];
-                    var secondEnd = boundaries[index + 2];
-                    var candidate = string.Concat(value.AsSpan(0, firstStart),
-                        value.AsSpan(firstEnd, secondEnd - firstEnd),
-                        value.AsSpan(firstStart, firstEnd - firstStart),
-                        value.AsSpan(secondEnd));
-                    TryAdd(candidate);
-                }
-
-                for (var start = 0; start < boundaries.Count - 1; start++)
-                for (var end = start + 1; end < boundaries.Count; end++)
-                {
-                    var offset = boundaries[start];
-                    var length = boundaries[end] - offset;
-                    var composed = value.Substring(offset, length).Normalize(NormalizationForm.FormC);
-                    if (composed.Length == length &&
-                        string.CompareOrdinal(composed, 0, value, offset, length) == 0)
-                        continue;
-                    var candidate = string.Concat(value.AsSpan(0, offset), composed,
-                        value.AsSpan(offset + length));
-                    TryAdd(candidate);
-                }
-            }
-
-            return seen.ToArray();
-        }
-
         private static string BuildSeedKey(byte[] application, byte[] definition)
         {
             var canonical = new byte[1 + 4 + application.Length + 4 + definition.Length];
@@ -121,36 +38,10 @@ namespace TickerQ.Utilities.Models
             return PersistedKeyPrefix + Convert.ToHexString(SHA256.HashData(canonical)).ToLowerInvariant();
         }
 
-        /// <summary>Keys written by pre-v2 implementations, in adoption preference order.</summary>
-        public static string[] LegacyAdoptionKeys(string applicationNamespace, string stableDefinitionId)
-        {
-            var application = ValidatePart(applicationNamespace, nameof(applicationNamespace));
-            var definition = ValidatePart(stableDefinitionId, nameof(stableDefinitionId));
-            var applicationVariants = CanonicalVariants(application);
-            var definitionVariants = CanonicalVariants(definition);
-            var keys = new HashSet<string>(StringComparer.Ordinal);
-
-            foreach (var app in applicationVariants)
-            foreach (var def in definitionVariants)
-            {
-                keys.Add($"{app}:{def}");
-                if (keys.Count > MaxLegacyAdoptionKeys)
-                    throw new InvalidOperationException(
-                        "Cron seed legacy compatibility identity has too many canonical representations to adopt safely.");
-            }
-
-            foreach (var def in definitionVariants)
-                keys.Add(def);
-            foreach (var key in AcceptedSeedKeys(application, definition))
-                keys.Add(key);
-
-            if (keys.Count > MaxLegacyAdoptionKeys)
-                throw new InvalidOperationException(
-                    "Cron seed legacy compatibility identity has too many canonical representations to adopt safely.");
-            return keys.ToArray();
-        }
-
-        /// <summary>Compares persisted pre-NFC identity text with canonical manifest text.</summary>
+        /// <summary>
+        /// Compares identity text after Unicode normalization (NFC). Function names stored by earlier releases
+        /// were not normalized, so a released row still matches its normalized declaration.
+        /// </summary>
         public static bool CanonicallyEquals(string left, string right)
             => left != null && right != null &&
                string.Equals(left.Normalize(NormalizationForm.FormC),

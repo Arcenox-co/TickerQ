@@ -59,12 +59,6 @@ namespace TickerQ.SourceGenerator.Validation
                 ));
             }
 
-            // Validate cron expression
-            TickerFunctionValidator.ValidateCronExpression(
-                attributeValues.cronExpression,
-                className,
-                attributeLocation,
-                context);
         }
     }
 }

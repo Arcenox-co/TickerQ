@@ -793,7 +793,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 // node as its parent — a child inserted/reparented INTO the chain in the window that the
                 // deepest-first delete would otherwise orphan. Also reconfirm the root is still a root.
                 var rootStillRoot = await set.AsNoTracking()
-                    .AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                    .ExistsAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                                    x.Id == rootId && x.ParentId == null &&
                                    (subtreeSize == 1 || x.DeleteBehavior == ChainDeleteBehavior.Cascade ||
                                     x.DeleteBehavior == ChainDeleteBehavior.Restrict), cancellationToken)
@@ -802,7 +802,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ParentId.HasValue)
                     .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(idList, x => x.ParentId.Value))
                     .Where(EfPredicateBuilder.DoesNotContain<TTimeTicker, Guid>(idList, x => x.Id))
-                    .AnyAsync(cancellationToken).ConfigureAwait(false);
+                    .ExistsAsync(cancellationToken).ConfigureAwait(false);
                 var currentEdges = await set.AsNoTracking()
                     .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
                     .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(idList, x => x.Id))

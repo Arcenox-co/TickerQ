@@ -44,44 +44,17 @@ public sealed class EfStoreMetadataKeyTests
         else if (provider == "SqlServer")
             Assert.Contains("[Id] nvarchar(80) NOT NULL", script);
     }
-
-    [Fact]
-    public async Task SampleMigration_PreservesMetadataAndAllowsActivation()
-    {
-        await using var connection = new SqliteConnection("Data Source=:memory:");
-        await connection.OpenAsync();
-        var options = new DbContextOptionsBuilder<TestTickerQDbContext>().UseSqlite(connection).Options;
-        await StoreMetadataActivationContract.VerifyAsync(options, upgradeLegacySchema: true,
-            useSampleMigration: true);
-    }
-}
-
-internal sealed class LegacyStoreMetadataModelCustomizer(ModelCustomizerDependencies dependencies)
-    : ModelCustomizer(dependencies)
-{
-    public override void Customize(ModelBuilder modelBuilder, DbContext context)
-    {
-        base.Customize(modelBuilder, context);
-        modelBuilder.Entity<TickerQStoreMetadata>().Property(x => x.Id).HasMaxLength(64);
-    }
 }
 
 internal static class StoreMetadataActivationContract
 {
-    internal static async Task VerifyAsync(
-        DbContextOptions<TestTickerQDbContext> options,
-        bool upgradeLegacySchema,
-        bool useSampleMigration = false)
+    internal static async Task VerifyAsync(DbContextOptions<TestTickerQDbContext> options)
     {
-        var schemaOptions = upgradeLegacySchema
-            ? new DbContextOptionsBuilder<TestTickerQDbContext>(options)
-                .ReplaceService<IModelCustomizer, LegacyStoreMetadataModelCustomizer>().Options
-            : options;
         var scope = new ReconciliationActivationScope("metadata-length-regression");
-        await using (var schema = new TestTickerQDbContext(schemaOptions))
+        await using (var schema = new TestTickerQDbContext(options))
         {
             await schema.Database.EnsureCreatedAsync();
-            // Existing short-key checkpoints must survive a widening migration unchanged.
+            // An existing singleton row must keep its values when the activation row is added.
             schema.Add(new TickerQStoreMetadata
             {
                 ApplicationNamespaceKey = scope.ScopeKey,
@@ -94,19 +67,6 @@ internal static class StoreMetadataActivationContract
             });
             await schema.SaveChangesAsync();
 
-            if (upgradeLegacySchema)
-            {
-                await using var target = new TestTickerQDbContext(options);
-                var targetModel = target.GetService<IDesignTimeModel>().Model;
-                var operations = useSampleMigration
-                    ? new TickerQ.Sample.Console.Migrations.WidenStoreMetadataKey().UpOperations
-                    : target.GetService<IMigrationsModelDiffer>().GetDifferences(
-                        schema.GetService<IDesignTimeModel>().Model.GetRelationalModel(),
-                        targetModel.GetRelationalModel());
-                foreach (var command in target.GetService<IMigrationsSqlGenerator>()
-                             .Generate(operations, targetModel))
-                    await target.Database.ExecuteSqlRawAsync(command.CommandText);
-            }
         }
 
         await using var services = new ServiceCollection()

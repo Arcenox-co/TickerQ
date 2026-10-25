@@ -41,7 +41,7 @@ namespace TickerQ.SourceGenerator.Analysis
             if (attrData == null)
                 return null;
 
-            var (functionName, cronExpression, taskPriority, maxConcurrency) = attrData.GetTickerFunctionAttributeValues();
+            var (functionName, _, taskPriority, maxConcurrency) = attrData.GetTickerFunctionAttributeValues();
 
             var fullClassName = SourceGeneratorUtilities.GetFullClassName(classDecl);
             var isStatic = methodDecl.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
@@ -50,9 +50,8 @@ namespace TickerQ.SourceGenerator.Analysis
             var model = new TickerMethodModel
             {
                 FunctionName = functionName,
-                CronExpression = !string.IsNullOrEmpty(cronExpression)
-                    ? Validation.CronValidator.NormalizeToSixPart(cronExpression)
-                    : cronExpression,
+                // Cron schedules are declared with options.SeedCronTickers(...), never on the attribute.
+                CronExpression = null,
                 TaskPriority = taskPriority,
                 MaxConcurrency = maxConcurrency,
                 MethodName = methodDecl.Identifier.Text,

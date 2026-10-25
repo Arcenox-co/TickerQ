@@ -69,7 +69,9 @@ internal sealed class TickerQClusterControlBackgroundService<TTimeTicker, TCronT
     {
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
         if (!store.SupportsClusterControl) return;
-        try { await store.UpsertNodeAsync(CreateNode(clock.UtcNow, false), cancellationToken).ConfigureAwait(false); }
+        // The final heartbeat reports epoch 0, so fenced nodes do not wait for this node's heartbeat to expire
+        // before deciding that no node runs the current deployment.
+        try { await store.UpsertNodeAsync(CreateNode(clock.UtcNow, false, 0), cancellationToken).ConfigureAwait(false); }
         catch (Exception exception) { logger.LogDebug(exception, "TickerQ final node heartbeat could not be saved."); }
     }
 
@@ -116,11 +118,13 @@ internal sealed class TickerQClusterControlBackgroundService<TTimeTicker, TCronT
     {
         var now = clock.UtcNow;
         _nextHeartbeatUtc = now + HeartbeatInterval;
-        return store.UpsertNodeAsync(CreateNode(now, hostScheduler.IsRunning), cancellationToken);
+        return store.UpsertNodeAsync(
+            CreateNode(now, hostScheduler.IsRunning, options.RuntimeActivationEpoch), cancellationToken);
     }
 
-    private TickerQNodeRecord CreateNode(DateTime now, bool running) => new()
+    private TickerQNodeRecord CreateNode(DateTime now, bool running, long activationEpoch) => new()
     {
+        ActivationEpoch = activationEpoch,
         NodeKey = _nodeKey,
         ExecutionOwnerId = options.ExecutionOwnerId,
         NodeIdentifier = options.NodeIdentifier,

@@ -21,7 +21,10 @@ public static class TickerProviderModelConventions
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
         if (providerName?.Contains("Oracle", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            ApplyOracleBooleanColumns(modelBuilder);
             ApplyOracleSeedKeyIndex(modelBuilder);
+        }
         if (providerName?.Contains("MySql", StringComparison.OrdinalIgnoreCase) == true ||
             providerName?.Contains("Pomelo", StringComparison.OrdinalIgnoreCase) == true)
             ApplyMySqlIndexKeyLimits(modelBuilder);
@@ -42,6 +45,30 @@ public static class TickerProviderModelConventions
         modelBuilder.Entity<Entities.AssistantInvestigationEntity>()
             .HasIndex(x => new { x.ApplicationNamespace, x.OccurredAt })
             .HasDatabaseName("IX_AssistantInvestigation_Namespace_OccurredAt");
+    }
+
+    // The Oracle provider maps bool to the BOOLEAN type, which only exists from Oracle 23ai; on 19c and
+    // 21c the migration fails with ORA-00904. For a NUMBER(1) column the provider uses its pre-23ai bool
+    // mapping (0/1 literals and parameters) whatever its SQL compatibility setting is, so TickerQ's bool
+    // columns use NUMBER(1) and work on every version. The host application's own entities keep the
+    // provider's mapping.
+    private static void ApplyOracleBooleanColumns(ModelBuilder modelBuilder)
+    {
+        foreach (var entity in modelBuilder.Model.GetEntityTypes().Where(e => IsTickerQEntity(e.ClrType)))
+        foreach (var property in entity.GetDeclaredProperties()
+                     .Where(p => p.ClrType == typeof(bool) || p.ClrType == typeof(bool?)))
+            property.SetColumnType("NUMBER(1)");
+    }
+
+    private static bool IsTickerQEntity(Type type)
+    {
+        for (var current = type; current != null; current = current.BaseType)
+        {
+            if (current.Assembly == typeof(CronTickerEntity).Assembly ||
+                current.Assembly == typeof(TickerProviderModelConventions).Assembly)
+                return true;
+        }
+        return false;
     }
 
     // A unique index over (ApplicationNamespaceKey, SeedKey) must allow any number of unseeded crons

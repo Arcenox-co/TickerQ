@@ -20,8 +20,13 @@ public enum RelationalConformanceTarget
     YugabyteDb,
     MySql,
     MariaDb,
+    /// <summary>MariaDB through Microting.EntityFrameworkCore.MySql, the Pomelo fork for EF Core 10.</summary>
+    MariaDbMicroting,
     SqlServer,
+    /// <summary>Oracle with the provider's default settings. Point it at 19c/21c as well as 23ai.</summary>
     Oracle,
+    /// <summary>Oracle with the provider's <c>OracleSQLCompatibility.DatabaseVersion19</c> setting.</summary>
+    OracleCompatibility19,
 }
 
 internal static class RelationalConformanceTargets
@@ -53,9 +58,10 @@ internal static class RelationalConformanceTargets
         RelationalConformanceTarget.PostgreSql or RelationalConformanceTarget.CockroachDb
             or RelationalConformanceTarget.YugabyteDb => NpgsqlFactory.Instance,
         RelationalConformanceTarget.MySql or RelationalConformanceTarget.MariaDb
-            => MySql.Data.MySqlClient.MySqlClientFactory.Instance,
+            or RelationalConformanceTarget.MariaDbMicroting => MySql.Data.MySqlClient.MySqlClientFactory.Instance,
         RelationalConformanceTarget.SqlServer => Microsoft.Data.SqlClient.SqlClientFactory.Instance,
-        RelationalConformanceTarget.Oracle => Oracle.ManagedDataAccess.Client.OracleClientFactory.Instance,
+        RelationalConformanceTarget.Oracle or RelationalConformanceTarget.OracleCompatibility19
+            => Oracle.ManagedDataAccess.Client.OracleClientFactory.Instance,
         _ => throw new ArgumentOutOfRangeException(nameof(target), target, null),
     };
 
@@ -80,11 +86,21 @@ internal static class RelationalConformanceTargets
             case RelationalConformanceTarget.MariaDb:
                 builder.UseMySQL(connectionString);
                 break;
+            case RelationalConformanceTarget.MariaDbMicroting:
+                // Pomelo-based providers reject EF schemas unless told how to treat them; Ignore keeps
+                // TickerQ's tables in the connection's database, as users of this provider configure it.
+                builder.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString),
+                    mysql => mysql.SchemaBehavior(Microting.EntityFrameworkCore.MySql.Infrastructure.MySqlSchemaBehavior.Ignore));
+                break;
             case RelationalConformanceTarget.SqlServer:
                 builder.UseSqlServer(connectionString);
                 break;
             case RelationalConformanceTarget.Oracle:
                 builder.UseOracle(connectionString);
+                break;
+            case RelationalConformanceTarget.OracleCompatibility19:
+                builder.UseOracle(connectionString, oracle =>
+                    oracle.UseOracleSQLCompatibility(OracleSQLCompatibility.DatabaseVersion19));
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(target), target, null);
@@ -151,8 +167,9 @@ internal sealed class ConformanceDatabase : IAsyncDisposable
     /// </summary>
     public string TickerQSchema => Target switch
     {
-        RelationalConformanceTarget.MySql or RelationalConformanceTarget.MariaDb => _name,
-        RelationalConformanceTarget.Oracle => _name,
+        RelationalConformanceTarget.MySql or RelationalConformanceTarget.MariaDb
+            or RelationalConformanceTarget.MariaDbMicroting => _name,
+        RelationalConformanceTarget.Oracle or RelationalConformanceTarget.OracleCompatibility19 => _name,
         _ => Schema,
     };
 
@@ -187,6 +204,7 @@ internal sealed class ConformanceDatabase : IAsyncDisposable
                 break;
             case RelationalConformanceTarget.MySql:
             case RelationalConformanceTarget.MariaDb:
+            case RelationalConformanceTarget.MariaDbMicroting:
                 await ExecuteAsync(factory, admin, $"CREATE DATABASE `{name}`");
                 builder["Database"] = name;
                 break;
@@ -195,6 +213,7 @@ internal sealed class ConformanceDatabase : IAsyncDisposable
                 builder["Initial Catalog"] = name;
                 break;
             case RelationalConformanceTarget.Oracle:
+            case RelationalConformanceTarget.OracleCompatibility19:
                 name = name.ToUpperInvariant();
                 const string password = "TqConf_Pw_2026";
                 await ExecuteAsync(factory, admin,
@@ -243,7 +262,10 @@ internal sealed class ConformanceDatabase : IAsyncDisposable
                     break;
                 case RelationalConformanceTarget.MySql:
                 case RelationalConformanceTarget.MariaDb:
+                case RelationalConformanceTarget.MariaDbMicroting:
                     MySql.Data.MySqlClient.MySqlConnection.ClearAllPools();
+                    // Microting runs on MySqlConnector, which keeps its own pool.
+                    MySqlConnector.MySqlConnection.ClearAllPools();
                     await ExecuteAsync(factory, _adminConnectionString, $"DROP DATABASE IF EXISTS `{_name}`");
                     break;
                 case RelationalConformanceTarget.SqlServer:
@@ -252,6 +274,7 @@ internal sealed class ConformanceDatabase : IAsyncDisposable
                         $"IF DB_ID('{_name}') IS NOT NULL BEGIN ALTER DATABASE [{_name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{_name}]; END");
                     break;
                 case RelationalConformanceTarget.Oracle:
+                case RelationalConformanceTarget.OracleCompatibility19:
                     Oracle.ManagedDataAccess.Client.OracleConnection.ClearAllPools();
                     await ExecuteAsync(factory, _adminConnectionString, $"DROP USER {_name} CASCADE");
                     break;

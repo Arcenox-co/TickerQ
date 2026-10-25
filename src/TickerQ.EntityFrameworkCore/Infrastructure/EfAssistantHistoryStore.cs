@@ -52,7 +52,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             string userId, Guid conversationId, CancellationToken cancellationToken = default)
         {
             var owns = await Conversations.AsNoTracking()
-                .AnyAsync(c => c.Id == conversationId && c.UserId == userId, cancellationToken);
+                .ExistsAsync(c => c.Id == conversationId && c.UserId == userId, cancellationToken);
             if (!owns) return null;
 
             var rows = await Messages.AsNoTracking()

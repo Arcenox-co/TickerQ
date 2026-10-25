@@ -67,6 +67,33 @@ public sealed class EfReconciliationActivationEpochTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task Begin_records_the_startup_manifest_and_moves_the_previous_one_into_history()
+    {
+        ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity> provider = _provider;
+        var scope = new ReconciliationActivationScope("manifest-history-" + Guid.NewGuid().ToString("N")[..8]);
+        Assert.True(provider.SupportsActivationManifest);
+
+        var first = await provider.BeginReconciliationActivationEpochAsync(scope, 1, "m1:aaa");
+        Assert.Equal("m1:aaa", first.Manifest);
+        Assert.Empty(first.ManifestHistory);
+        await provider.AdvanceReconciliationCheckpointAsync(scope, 1, "01-bootstrap-complete");
+        Assert.Equal("m1:aaa", (await provider.CommitReconciliationActivationEpochAsync(scope, 1)).Manifest);
+
+        // A claim that does not write leaves the recorded manifest alone.
+        Assert.Equal("m1:aaa", (await provider.BeginReconciliationActivationEpochAsync(scope, 1, "m1:bbb")).Manifest);
+
+        var second = await provider.BeginReconciliationActivationEpochAsync(scope, 2, "m1:bbb");
+        Assert.Equal(("m1:bbb", 2L), (second.Manifest, second.Epoch));
+        Assert.Equal(["m1:aaa"], second.ManifestHistory);
+
+        // Reclaiming an earlier manifest (a rollback) makes it current again.
+        await provider.BeginReconciliationActivationEpochAsync(scope, 3, "m1:aaa");
+        var read = await provider.GetReconciliationActivationStateAsync(scope);
+        Assert.Equal(("m1:aaa", 3L, ActivationEpochPhase.Activating), (read.Manifest, read.Epoch, read.Phase));
+        Assert.Equal(["m1:bbb"], read.ManifestHistory);
+    }
+
+    [Fact]
     public async Task Fresh_store_is_pending_and_provider_advertises_epoch_support()
     {
         Assert.True(_provider.SupportsReconciliationActivationEpoch);

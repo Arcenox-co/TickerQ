@@ -93,6 +93,19 @@ namespace TickerQ.Utilities.Managers
             _persistenceProvider.SupportsAuthoritativeCronReconciliation;
         public bool SupportsLegacyRuntimePartitionAdoption =>
             _persistenceProvider.SupportsLegacyRuntimePartitionAdoption;
+        public bool SupportsClusterControl => _persistenceProvider.SupportsClusterControl;
+        public Task<IReadOnlyList<Cluster.TickerQNodeRecord>> GetClusterNodesAsync(CancellationToken cancellationToken = default)
+            => _persistenceProvider.GetNodesAsync(cancellationToken);
+        public async Task<bool> HasDueSeedRetirementsAsync(DateTime requestedAtOrBeforeUtc,
+            CancellationToken cancellationToken = default)
+        {
+            var due = await _persistenceProvider.GetCronTickers(
+                    x => x.SeedKey != null && x.RetiredAt == null && x.RetirementRequestedAt != null &&
+                         x.RetirementRequestedAt <= requestedAtOrBeforeUtc,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return due is { Length: > 0 };
+        }
         public async Task<bool> ReportProgressAsync(TickerProgressUpdate update,
             CancellationToken cancellationToken = default)
         {
@@ -125,6 +138,11 @@ namespace TickerQ.Utilities.Managers
         public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
             ReconciliationActivationScope scope, long targetEpoch, CancellationToken cancellationToken = default)
             => _persistenceProvider.BeginReconciliationActivationEpochAsync(scope, targetEpoch, cancellationToken);
+        public bool SupportsActivationManifest => _persistenceProvider.SupportsActivationManifest;
+        public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
+            ReconciliationActivationScope scope, long targetEpoch, string manifest,
+            CancellationToken cancellationToken = default)
+            => _persistenceProvider.BeginReconciliationActivationEpochAsync(scope, targetEpoch, manifest, cancellationToken);
         public Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(
             ReconciliationActivationScope scope, long targetEpoch, string checkpoint,
             CancellationToken cancellationToken = default)

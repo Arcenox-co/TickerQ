@@ -30,6 +30,8 @@ namespace TickerQ.Utilities.DashboardDtos
         public int? TimeoutSeconds { get; set; }
         public string TimeZoneId { get; set; }
         public string SchedulePolicyName { get; set; }
+        /// <summary>True when the cron was declared in code with SeedCronTickers and is reconciled on each new epoch.</summary>
+        public bool IsSeeded { get; set; }
         public long? SchedulePolicyVersion { get; set; }
         public BlockedOccurrenceBehavior? BlockedOccurrenceBehavior { get; set; }
         public MissedExecutionAction MissedExecutionAction { get; set; }

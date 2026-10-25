@@ -24,6 +24,52 @@ public class TestDbContext : DbContext
 public class ServiceExtensionTests
 {
     /// <summary>
+    /// EF Core tools find a context by name through the registered DbContextOptions (issue #867). The
+    /// dedicated context must be discoverable before any migration exists, and resolvable with the same
+    /// TickerQ model the scheduler uses.
+    /// </summary>
+    [Fact]
+    public void UseTickerQDbContext_RegistersOptionsThatEfToolsCanDiscover()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Services.AddTickerQ(tickerOptions =>
+        {
+            tickerOptions.UseApplicationNamespace("ef-tools-discovery");
+            tickerOptions.AddOperationalStore(efOptions =>
+                efOptions.UseTickerQDbContext<TickerQ.EntityFrameworkCore.DbContextFactory.TickerQDbContext>(options =>
+                    options.UseSqlite("Data Source=EfToolsDiscovery;Mode=Memory;Cache=Shared")));
+        });
+
+        var app = builder.Build();
+
+        var registered = app.Services.GetServices<DbContextOptions>().Select(options => options.ContextType);
+        Assert.Contains(typeof(TickerQ.EntityFrameworkCore.DbContextFactory.TickerQDbContext), registered);
+        using var scope = app.Services.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<TickerQ.EntityFrameworkCore.DbContextFactory.TickerQDbContext>();
+        Assert.NotNull(context.Model.FindEntityType(typeof(TimeTickerEntity)));
+    }
+
+    [Fact]
+    public void UseTickerQDbContext_KeepsOptionsTheApplicationRegistered()
+    {
+        var builder = WebApplication.CreateBuilder();
+        var own = new DbContextOptionsBuilder<TickerQ.EntityFrameworkCore.DbContextFactory.TickerQDbContext>()
+            .UseSqlite("Data Source=OwnOptions;Mode=Memory;Cache=Shared").Options;
+        builder.Services.AddSingleton(own);
+        builder.Services.AddTickerQ(tickerOptions =>
+        {
+            tickerOptions.UseApplicationNamespace("ef-tools-own-options");
+            tickerOptions.AddOperationalStore(efOptions =>
+                efOptions.UseTickerQDbContext<TickerQ.EntityFrameworkCore.DbContextFactory.TickerQDbContext>(options =>
+                    options.UseSqlite("Data Source=EfToolsOwn;Mode=Memory;Cache=Shared")));
+        });
+
+        var app = builder.Build();
+
+        Assert.Same(own, app.Services.GetRequiredService<DbContextOptions<TickerQ.EntityFrameworkCore.DbContextFactory.TickerQDbContext>>());
+    }
+
+    /// <summary>
     /// Uses WebApplicationFactory to create fake application with fake DbContext TestDbContext
     /// and adds TickerQ with AddOperationalStore and UseApplicationDbContext to the application.
     /// It needs to verify that DbContext is successfully used and TickerQ sets are accessible from it.

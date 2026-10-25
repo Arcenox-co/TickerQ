@@ -124,6 +124,7 @@ namespace TickerQ.DependencyInjection
             // Register the initializer hosted service BEFORE scheduler services
             // to guarantee seeding completes before the scheduler starts polling.
             // Registered as a singleton so UseTickerQ can resolve it to set the initialization flag.
+            services.AddSingleton<TickerQReconciliationActivator>();
             services.AddSingleton<TickerQInitializerHostedService>();
             services.AddHostedService(sp => sp.GetRequiredService<TickerQInitializerHostedService>());
 
@@ -155,6 +156,11 @@ namespace TickerQ.DependencyInjection
                     provider.GetRequiredService<TickerQSchedulerBackgroundService>());
                 services.AddHostedService(provider => provider.GetRequiredService<TickerQFallbackBackgroundService>());
                 services.AddSingleton<TickerQFallbackBackgroundService>();
+
+                // Without an explicit UseReconciliationEpoch, the monitor follows, resumes, and takes over
+                // automatic epochs after startup.
+                if (schedulerOptionsBuilder.AutomaticReconciliationEpoch)
+                    services.AddHostedService<TickerQActivationMonitorBackgroundService>();
 
                 // Retention maintenance loop. Registered AFTER the scheduler on purpose: hosted services
                 // stop in reverse registration order, so retention stops FIRST — it must not be deleting

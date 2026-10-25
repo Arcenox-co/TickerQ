@@ -20,4 +20,8 @@ public sealed class TickerQStoreMetadata
     public long ActivationEpoch { get; set; }
     public ActivationEpochPhase ActivationPhase { get; set; }
     public string ActivationCheckpoint { get; set; }
+    /// <summary>Startup manifest fingerprint recorded by the deployment that claimed <see cref="ActivationEpoch"/>.</summary>
+    public string ActivationManifest { get; set; }
+    /// <summary>Comma-separated fingerprints of earlier deployments, newest first.</summary>
+    public string ActivationManifestHistory { get; set; }
 }

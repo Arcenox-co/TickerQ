@@ -15,15 +15,10 @@ namespace TickerQ.Utilities
             FunctionName = functionName;
         }
 
-        /// <summary>
-        /// Sets the cron expression for this function. Validates immediately — throws if invalid.
-        /// Accepts string (implicit conversion) or CronExpression.Parse().
-        /// </summary>
+        /// <summary>No longer supported: declare cron schedules with <c>options.SeedCronTickers(...)</c>.</summary>
+        [System.Obsolete(Base.TickerFunctionAttribute.CronMovedMessage, error: true)]
         public TickerFunctionBuilder WithCron(CronExpression cronExpression)
-        {
-            TickerFunctionProvider.Configure(FunctionName, cronExpression: cronExpression.Value);
-            return this;
-        }
+            => throw new System.NotSupportedException(Base.TickerFunctionAttribute.CronMovedMessage);
 
         /// <summary>
         /// Sets the maximum concurrent executions for this function.

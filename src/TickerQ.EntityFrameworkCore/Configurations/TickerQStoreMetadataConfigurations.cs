@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using TickerQ.EntityFrameworkCore.Entities;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.EntityFrameworkCore.Configurations;
 
@@ -18,6 +19,9 @@ public sealed class TickerQStoreMetadataConfigurations : IEntityTypeConfiguratio
         builder.Property(x => x.Id).HasMaxLength(80);
         builder.Property(x => x.LastMigrationId).HasMaxLength(200).IsRequired(false);
         builder.Property(x => x.ActivationCheckpoint).HasMaxLength(200).IsRequired(false);
+        builder.Property(x => x.ActivationManifest).HasMaxLength(ActivationManifests.MaxLength).IsRequired(false);
+        builder.Property(x => x.ActivationManifestHistory)
+            .HasMaxLength(ActivationManifests.MaxHistoryLength).IsRequired(false);
         builder.Property(x => x.Version).IsConcurrencyToken();
         builder.ToTable("TickerQStoreMetadata", _schema);
     }

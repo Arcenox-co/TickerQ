@@ -78,7 +78,7 @@ public abstract class DefinedCronMigrationContractTests
     {
         var function = $"namespaced-explicit-adoption-{order}";
         var legacy = SeededRow(function);
-        legacy.SeedKey = function;
+        legacy.SeedKey = null;
         await Provider.InsertCronTickers([legacy], CancellationToken.None);
 
         var ownership = new System.Collections.Generic.Dictionary<string, string>(StringComparer.Ordinal)
@@ -123,7 +123,7 @@ public abstract class DefinedCronMigrationContractTests
         const string composedFunction = "Caf\u00e9Job";
         const string decomposedFunction = "Cafe\u0301Job";
         var legacy = SeededRow(decomposedFunction);
-        legacy.SeedKey = decomposedFunction;
+        legacy.SeedKey = null;
         await Provider.InsertCronTickers([legacy], CancellationToken.None);
         var manifest = OwnedManifestWithLegacyOwner(applicationNamespace, composedFunction,
             new DefinedCronTickerSeed(composedFunction, "*/9 * * * *"));
@@ -137,112 +137,11 @@ public abstract class DefinedCronMigrationContractTests
     }
 
     [Fact]
-    public async Task Namespaced_ExplicitLegacyOwner_AdoptsOutOfOrderCombiningMarkPlaintextKey()
-    {
-        const string canonicalNamespace = "legacy-\u00e0\u0315-owner";
-        const string rawNamespace = "legacy-a\u0315\u0300-owner";
-        const string canonicalFunction = "job-\u00e0\u0315";
-        const string rawFunction = "job-a\u0315\u0300";
-        var legacy = SeededRow(canonicalFunction);
-        legacy.SeedKey = $"{rawNamespace}:{rawFunction}";
-        await Provider.InsertCronTickers([legacy], CancellationToken.None);
-        var manifest = OwnedManifestWithLegacyOwner(canonicalNamespace, canonicalFunction,
-            new DefinedCronTickerSeed(canonicalFunction, "*/11 * * * *"));
-
-        await Provider.MigrateDefinedCronTickers(manifest, CancellationToken.None);
-
-        var rows = (await Provider.GetCronTickers(_ => true, CancellationToken.None))
-            .Where(row => CronSeedIdentity.CanonicallyEquals(row.Function, canonicalFunction)).ToArray();
-        var adopted = Assert.Single(rows);
-        Assert.Equal(legacy.Id, adopted.Id);
-        Assert.True(adopted.IsEnabled);
-        Assert.Equal(canonicalNamespace, adopted.SeedOwnerNamespace);
-        Assert.Equal(CronSeedIdentity.SeedKey(canonicalNamespace, canonicalFunction), adopted.SeedKey);
-    }
-
-    [Fact]
-    public async Task Namespaced_ExplicitLegacyOwner_AdoptsOutOfOrderBareFunctionKeyWithDistinctStableId()
-    {
-        const string applicationNamespace = "bare-key-adopter";
-        const string canonicalFunction = "job-\u00e0\u0315";
-        const string rawFunction = "job-a\u0315\u0300";
-        const string stableDefinitionId = "stable-job-definition";
-        var legacy = SeededRow(canonicalFunction);
-        legacy.SeedKey = rawFunction;
-        await Provider.InsertCronTickers([legacy], CancellationToken.None);
-        var manifest = OwnedManifestWithLegacyOwner(applicationNamespace, canonicalFunction,
-            new DefinedCronTickerSeed(canonicalFunction, "*/13 * * * *",
-                stableDefinitionId: stableDefinitionId));
-
-        await Provider.MigrateDefinedCronTickers(manifest, CancellationToken.None);
-
-        var rows = (await Provider.GetCronTickers(_ => true, CancellationToken.None))
-            .Where(row => CronSeedIdentity.CanonicallyEquals(row.Function, canonicalFunction)).ToArray();
-        var adopted = Assert.Single(rows);
-        Assert.Equal(legacy.Id, adopted.Id);
-        Assert.True(adopted.IsEnabled);
-        Assert.Equal(applicationNamespace, adopted.SeedOwnerNamespace);
-        Assert.Equal(CronSeedIdentity.SeedKey(applicationNamespace, stableDefinitionId), adopted.SeedKey);
-    }
-
-    [Fact]
-    public async Task Namespaced_PreNfcV2OwnedSeed_IsCanonicalizedInPlaceWithoutDuplicate()
-    {
-        const string composedNamespace = "Caf\u00e9-R\u00e9sum\u00e9-\u00e0\u0315-owner";
-        const string mixedNamespace = "Cafe\u0301-R\u00e9sume\u0301-a\u0315\u0300-owner";
-        const string composedFunction = "R\u00e9sum\u00e9-Caf\u00e9Job-\u00e0\u0315";
-        const string mixedFunction = "Re\u0301sum\u00e9-Cafe\u0301Job-a\u0315\u0300";
-        var canonicalKey = CronSeedIdentity.SeedKey(composedNamespace, composedFunction);
-        var manifest = OwnedManifest(composedNamespace,
-            new DefinedCronTickerSeed(composedFunction, "*/5 * * * *"));
-        var desired = Assert.Single(manifest.Seeds);
-        var owned = SeededRow(mixedFunction);
-        owned.Expression = desired.Expression;
-        owned.SeedOwnerNamespace = mixedNamespace;
-        owned.SeedKey = PreNfcV2SeedKey(mixedNamespace, mixedFunction);
-        owned.RequestContractVersion = desired.RequestContractVersion;
-        owned.RequestContractFingerprint = desired.RequestContractFingerprint;
-        owned.Retries = desired.Retries;
-        owned.RetryIntervals = desired.RetryIntervals;
-        owned.TimeoutSeconds = desired.TimeoutSeconds;
-        await Provider.InsertCronTickers([owned], CancellationToken.None);
-        var pending = NewOccurrence(owned.Id);
-        await Provider.InsertCronTickerOccurrences([pending], CancellationToken.None);
-
-        await Provider.MigrateDefinedCronTickers(manifest, CancellationToken.None);
-
-        var rows = (await Provider.GetCronTickers(_ => true, CancellationToken.None))
-            .Where(row => CronSeedIdentity.CanonicallyEquals(row.Function, composedFunction)).ToArray();
-        var canonical = Assert.Single(rows);
-        Assert.Equal(owned.Id, canonical.Id);
-        Assert.Equal(composedNamespace, canonical.SeedOwnerNamespace);
-        Assert.Equal(canonicalKey, canonical.SeedKey);
-        var persistedOccurrence = Assert.Single(await Provider.GetAllCronTickerOccurrences(
-            occurrence => occurrence.Id == pending.Id, CancellationToken.None));
-        Assert.Equal(TickerStatus.Idle, persistedOccurrence.Status);
-        Assert.Null(persistedOccurrence.SkippedReason);
-    }
-
-    private static string PreNfcV2SeedKey(string applicationNamespace, string stableDefinitionId)
-    {
-        var application = Encoding.UTF8.GetBytes(applicationNamespace);
-        var definition = Encoding.UTF8.GetBytes(stableDefinitionId);
-        var framed = new byte[1 + 4 + application.Length + 4 + definition.Length];
-        framed[0] = 2;
-        BinaryPrimitives.WriteInt32BigEndian(framed.AsSpan(1, 4), application.Length);
-        application.CopyTo(framed.AsSpan(5));
-        var definitionOffset = 5 + application.Length;
-        BinaryPrimitives.WriteInt32BigEndian(framed.AsSpan(definitionOffset, 4), definition.Length);
-        definition.CopyTo(framed.AsSpan(definitionOffset + 4));
-        return "tq:cron-seed:v2:" + Convert.ToHexString(SHA256.HashData(framed)).ToLowerInvariant();
-    }
-
-    [Fact]
     public async Task Namespaced_UnclaimedLegacyCandidate_FailsBeforeAnyMutation()
     {
         const string function = "namespaced-unclaimed-legacy";
         var legacy = SeededRow(function);
-        legacy.SeedKey = function;
+        legacy.SeedKey = null;
         await Provider.InsertCronTickers([legacy], CancellationToken.None);
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -253,7 +152,7 @@ public abstract class DefinedCronMigrationContractTests
         var row = Assert.Single(await Provider.GetCronTickers(r => r.Function == function, CancellationToken.None));
         Assert.Equal(legacy.Id, row.Id);
         Assert.Null(row.SeedOwnerNamespace);
-        Assert.Equal(function, row.SeedKey);
+        Assert.Null(row.SeedKey);
     }
 
     [Fact]
@@ -359,7 +258,7 @@ public abstract class DefinedCronMigrationContractTests
     {
         const string function = "namespaced-legacy-adoption";
         var legacy = SeededRow(function);
-        legacy.SeedKey = function;
+        legacy.SeedKey = null;
         await Provider.InsertCronTickers([legacy], CancellationToken.None);
 
         await Provider.MigrateDefinedCronTickers(
@@ -377,7 +276,7 @@ public abstract class DefinedCronMigrationContractTests
     {
         const string function = "namespaced-ambiguous-adoption";
         var a = SeededRow(function);
-        a.SeedKey = function;
+        a.SeedKey = null;
         var b = SeededRow(function);
         b.SeedKey = null;
         await Provider.InsertCronTickers([a, b], CancellationToken.None);
@@ -396,7 +295,7 @@ public abstract class DefinedCronMigrationContractTests
     {
         const string function = "namespaced-concurrent-adoption";
         var legacy = SeededRow(function);
-        legacy.SeedKey = function;
+        legacy.SeedKey = null;
         await Provider.InsertCronTickers([legacy], CancellationToken.None);
         var manifest = OwnedManifestWithLegacyOwner("concurrent-owner", function,
             new DefinedCronTickerSeed(function, "*/7 * * * *"));

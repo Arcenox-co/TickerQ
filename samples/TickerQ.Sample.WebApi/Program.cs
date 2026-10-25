@@ -16,10 +16,9 @@ builder.Services.AddTickerQ(options =>
     if (!string.IsNullOrWhiteSpace(licensePath))
         options.UseLicense(licensePath);
 
-    // Physical runtime partition + exact epoch. The host-owned
+    // Physical runtime partition. The host-owned
     // ApplicationRuntimePartitioning migration installs the EF ownership shape.
     options.UseApplicationNamespace("web-api-sample");
-    options.UseReconciliationEpoch(1);
     // Existing verified single-owner stores only, for one reviewed rollout:
     // options.UseLegacyRuntimePartitionAdoption("web-api-sample", 1);
     options.AddOperationalStore(efOptions =>
@@ -36,11 +35,17 @@ builder.Services.AddTickerQ(options =>
 
 var app = builder.Build();
 
-// Apply the host-owned migration history, including ApplicationRuntimePartitioning.
+// Apply the host-owned migration history.
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<TickerQDbContext>();
+    // SQLite rebuilds tables to change their primary keys, which requires foreign keys to be off.
+    // The pragma only takes effect outside a transaction, so set it on the open connection first.
+    db.Database.OpenConnection();
+    db.Database.ExecuteSqlRaw("PRAGMA foreign_keys = OFF;");
     db.Database.Migrate();
+    db.Database.ExecuteSqlRaw("PRAGMA foreign_keys = ON;");
+    db.Database.CloseConnection();
 }
 
 // Activate TickerQ job processor (mirrors docs' minimal setup)

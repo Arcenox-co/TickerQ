@@ -92,6 +92,18 @@ public class DashboardCancellationTests : IDisposable
         await _data.DidNotReceiveWithAnyArgs().RequestRunningTickerCancellationAsync(default, default, default);
     }
 
+    [Theory]
+    [InlineData("viewer", HttpStatusCode.Forbidden)]
+    [InlineData("ops", HttpStatusCode.NoContent)]
+    public async Task WriteEndpoints_EnforcePerUserReadOnlyPredicate(string role, HttpStatusCode expected)
+    {
+        using var host = await CreateHost(readOnlyWhen: context => !context.User.IsInRole("ops"), role: role);
+
+        var response = await host.GetTestClient().PostAsync("/api/dashboard/host/restart", null);
+
+        Assert.Equal(expected, response.StatusCode);
+    }
+
     [Fact]
     public async Task TimeTickerResultEndpoint_ReturnsPersistedEnvelopeAndMetadata()
     {
@@ -171,9 +183,11 @@ public class DashboardCancellationTests : IDisposable
         Assert.False(await service.RequestRunningTickerCancellationAsync(id, type));
     }
 
-    private async Task<IHost> CreateHost(bool readOnly = false)
+    private async Task<IHost> CreateHost(bool readOnly = false,
+        Func<Microsoft.AspNetCore.Http.HttpContext, bool> readOnlyWhen = null, string role = null)
     {
         var options = new DashboardOptionsBuilder().AllowAnonymousDashboard().SetReadOnly(readOnly);
+        if (readOnlyWhen != null) options.SetReadOnly(readOnlyWhen);
         options.DashboardJsonOptions = new JsonSerializerOptions(DashboardJsonSerializerContext.Default.Options);
         return await new HostBuilder().ConfigureWebHost(web => web.UseTestServer()
             .ConfigureServices(services =>
@@ -188,6 +202,13 @@ public class DashboardCancellationTests : IDisposable
             })
             .Configure(app =>
             {
+                if (role != null)
+                    app.Use((context, next) =>
+                    {
+                        context.User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
+                            [new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Role, role)], "test"));
+                        return next(context);
+                    });
                 app.UseRouting();
                 app.UseCors();
                 app.UseEndpoints(endpoints => endpoints.MapDashboardEndpoints<TimeTickerEntity, CronTickerEntity>(options));

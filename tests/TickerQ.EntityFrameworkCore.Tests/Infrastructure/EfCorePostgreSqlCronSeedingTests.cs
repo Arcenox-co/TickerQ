@@ -46,12 +46,7 @@ public sealed class EfCorePostgreSqlCronSeedingTests(ITestOutputHelper output)
         await postgres.StartAsync();
         var options = new DbContextOptionsBuilder<TestTickerQDbContext>()
             .UseNpgsql(postgres.GetConnectionString()).Options;
-        foreach (var upgradeLegacySchema in new[] { false, true })
-        {
-            await using var cleanup = new TestTickerQDbContext(options);
-            await cleanup.Database.EnsureDeletedAsync();
-            await StoreMetadataActivationContract.VerifyAsync(options, upgradeLegacySchema);
-        }
+        await StoreMetadataActivationContract.VerifyAsync(options);
     }
 
     [PostgreSqlRaceFact]

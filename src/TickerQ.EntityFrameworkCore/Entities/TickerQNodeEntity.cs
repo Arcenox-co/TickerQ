@@ -21,4 +21,5 @@ public sealed class TickerQNodeEntity
     public int ActiveWorkflows { get; set; }
     public int WaitingForFunction { get; set; }
     public int RetryingExecutions { get; set; }
+    public long ActivationEpoch { get; set; }
 }

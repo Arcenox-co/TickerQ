@@ -37,8 +37,13 @@ namespace TickerQ.Utilities.Managers
         private readonly SchedulePolicyEvaluator _schedulePolicyEvaluator;
         private readonly bool _runtimeSchedulerEnabled;
         private readonly string _runtimeActivationScopeKey;
-        private readonly long _runtimeActivationEpoch;
-        private static readonly SemaphoreSlim AddOnceGate = new(1, 1);
+        private readonly SchedulerOptionsBuilder _schedulerOptions;
+        private readonly long _configuredActivationEpoch;
+        // An automatic epoch is resolved after construction; an explicit one is fixed for the process.
+        private long _runtimeActivationEpoch => _schedulerOptions is { AutomaticReconciliationEpoch: true }
+            ? _schedulerOptions.RuntimeActivationEpoch
+            : _configuredActivationEpoch;
+        private static readonly SemaphoreSlim SeededTimeTickerGate = new(1, 1);
         public TickerManager(
             ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerQHostScheduler tickerQHostScheduler,
@@ -62,7 +67,8 @@ namespace TickerQ.Utilities.Managers
             _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
             _runtimeSchedulerEnabled = schedulerOptions?.RuntimeSchedulerEnabled ?? true;
             _runtimeActivationScopeKey = schedulerOptions?.RuntimeActivationScope?.ScopeKey;
-            _runtimeActivationEpoch = schedulerOptions?.RuntimeActivationEpoch ?? 0;
+            _schedulerOptions = schedulerOptions;
+            _configuredActivationEpoch = schedulerOptions?.RuntimeActivationEpoch ?? 0;
             _activationGate = activationGate ?? throw new ArgumentNullException(nameof(activationGate));
             _logger = logger ?? NullLogger<TickerManager<TTimeTicker, TCronTicker>>.Instance;
             _lifecycle = lifecycle;
@@ -110,19 +116,24 @@ namespace TickerQ.Utilities.Managers
             }
         }
 
-        async Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.AddOnceAsync(string initIdentifier, TTimeTicker entity, CancellationToken cancellationToken)
+        /// <summary>
+        /// Creates a SeedTimeTickers declaration once per key: if a time ticker with that key is stored, it is
+        /// returned untouched. Concurrent replicas converge on a deterministic id derived from the key.
+        /// </summary>
+        internal async Task<TickerResult<TTimeTicker>> AddSeededTimeTickerAsync(string initIdentifier, TTimeTicker entity,
+            CancellationToken cancellationToken)
         {
             if (entity is null)
                 return new TickerResult<TTimeTicker>(new TickerValidatorException("Ticker must not be null."));
             if (string.IsNullOrWhiteSpace(initIdentifier))
                 return new TickerResult<TTimeTicker>(
-                    new TickerValidatorException("AddOnceAsync requires a non-empty initIdentifier."));
+                    new TickerValidatorException("A seeded time ticker requires a non-empty key."));
 
             // Admission must happen before the process-wide deduplication gate. Otherwise an ordinary
-            // pre-start caller can hold AddOnceGate while waiting for activation and deadlock the
+            // pre-start caller can hold the gate while waiting for activation and deadlock the
             // initializer seeder that is authorized to complete that activation.
             await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
-            await AddOnceGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await SeededTimeTickerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 var existing = await _persistenceProvider
@@ -147,7 +158,7 @@ namespace TickerQ.Utilities.Managers
             }
             finally
             {
-                AddOnceGate.Release();
+                SeededTimeTickerGate.Release();
             }
         }
 
@@ -290,18 +301,8 @@ namespace TickerQ.Utilities.Managers
                 return new TickerResult<TTimeTicker>(new TickerValidatorException("Ticker must not be null."));
             await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
 
-            if (entity.Id == Guid.Empty)
-                entity.Id = Guid.NewGuid();
-
-            if (ValidateAndStampTimeTickerGraph([entity]) is { } requestError)
-                return new TickerResult<TTimeTicker>(requestError);
-
-            entity.ExecutionTime = entity.ExecutionTime == null
-                ? _clock.UtcNow
-                : ConvertToUtcIfNeeded(entity.ExecutionTime.Value);
-
-            if (await ApplyTimeSchedulePolicyAsync(entity, cancellationToken).ConfigureAwait(false) is { } policyError)
-                return new TickerResult<TTimeTicker>(policyError);
+            if (await PrepareNewTimeTickerAsync(entity, cancellationToken).ConfigureAwait(false) is { } error)
+                return new TickerResult<TTimeTicker>(error);
 
             entity.CreatedAt = _clock.UtcNow;
             entity.UpdatedAt = _clock.UtcNow;
@@ -368,6 +369,25 @@ namespace TickerQ.Utilities.Managers
             {
                 return new TickerResult<TTimeTicker>(e);
             }
+        }
+
+        /// <summary>
+        /// Validates and stamps a new time ticker before it is persisted: identity, chain shape, request
+        /// contracts, execution time, and its schedule policy.
+        /// </summary>
+        private async Task<TickerValidatorException> PrepareNewTimeTickerAsync(TTimeTicker entity, CancellationToken cancellationToken)
+        {
+            if (entity.Id == Guid.Empty)
+                entity.Id = Guid.NewGuid();
+
+            if (ValidateAndStampTimeTickerGraph([entity]) is { } requestError)
+                return requestError;
+
+            entity.ExecutionTime = entity.ExecutionTime == null
+                ? _clock.UtcNow
+                : ConvertToUtcIfNeeded(entity.ExecutionTime.Value);
+
+            return await ApplyTimeSchedulePolicyAsync(entity, cancellationToken).ConfigureAwait(false);
         }
 
         private async Task<TickerResult<TCronTicker>> AddCronTickerAsync(TCronTicker entity, CancellationToken cancellationToken)
@@ -777,6 +797,60 @@ namespace TickerQ.Utilities.Managers
                    _runtimeActivationScopeKey, _runtimeActivationEpoch)
                 ? _activationGate.WaitForActivationAsync(cancellationToken)
                 : Task.CompletedTask;
+
+        /// <summary>
+        /// Validates a cron declared with SeedCronTickers using the same rules as AddChainAsync: registered
+        /// functions, request contracts for every step, chain shape, late-start and catch-up settings, time
+        /// zone, an existing schedule policy, and at least one allowed future occurrence. Stamps contract
+        /// identity and the policy's canonical name and revision. Does not wait for mutation admission,
+        /// because seeding runs while startup activation is in progress.
+        /// </summary>
+        internal async Task ValidateSeededCronAsync(TCronTicker cron, CancellationToken cancellationToken)
+        {
+            PrevalidateSeededCron(cron);
+            if (await GetNextAllowedCronOccurrenceAsync(cron, _clock.UtcNow, cancellationToken).ConfigureAwait(false) is null)
+                throw new TickerValidatorException(
+                    $"Cron schedule '{cron.Expression}' has no allowed future occurrence or is invalid.");
+        }
+
+        /// <summary>
+        /// Validates a ticker declared with SeedTimeTickers using the same rules as AddChainAsync: registered
+        /// functions, request contracts for every step, chain shape, late-start settings, and an existing
+        /// schedule policy that admits the run time. The validated entity is discarded; the seed is built
+        /// again for the keyed insert. Does not wait for mutation admission.
+        /// </summary>
+        /// <summary>Whether a time ticker created with <paramref name="initIdentifier"/> is still stored.</summary>
+        internal async Task<bool> TimeTickerKeyExistsAsync(string initIdentifier, CancellationToken cancellationToken)
+        {
+            var existing = await _persistenceProvider
+                .GetTimeTickers(x => x.InitIdentifier == initIdentifier, cancellationToken)
+                .ConfigureAwait(false);
+            return existing is { Length: > 0 };
+        }
+
+        internal async Task ValidateSeededTimeAsync(TTimeTicker ticker, CancellationToken cancellationToken)
+        {
+            if (!TickerFunctionProvider.TickerFunctions.ContainsKey(ticker.Function))
+                throw new TickerValidatorException($"Cannot find TickerFunction with name {ticker.Function}");
+            if (await PrepareNewTimeTickerAsync(ticker, cancellationToken).ConfigureAwait(false) is { } error)
+                throw error;
+        }
+
+        /// <summary>
+        /// The seeded-cron checks that do not depend on stored schedule policies: registered functions,
+        /// request contracts for every step, chain shape, and late-start and catch-up settings. Runs before
+        /// startup claims an epoch, so an invalid declaration fails without fencing the running deployment.
+        /// </summary>
+        internal void PrevalidateSeededCron(TCronTicker cron)
+        {
+            if (!TickerFunctionProvider.TickerFunctions.ContainsKey(cron.Function))
+                throw new TickerValidatorException($"Cannot find TickerFunction with name {cron.Function}");
+            if (cron.Chain is { Children.Count: 0 })
+                cron.Chain = null;
+            if (ValidateAndStampCron(cron, _persistenceProvider.SupportsCronChains,
+                    _persistenceProvider.SupportsCronCatchUp) is { } error)
+                throw error;
+        }
 
         internal static TickerValidatorException ValidateAndStampCron(
             TCronTicker cron, bool supportsCronChains, bool supportsCronCatchUp)

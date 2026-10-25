@@ -64,7 +64,11 @@ namespace TickerQ.MongoDB.Infrastructure
         private readonly ITickerClock _clock;
         private readonly string _lockHolder;
         private readonly SchedulerOptionsBuilder _schedulerOptions;
-        private readonly long _runtimeActivationEpoch;
+        private readonly long _configuredActivationEpoch;
+        // An automatic epoch is resolved after construction; an explicit one is fixed for the process.
+        private long _runtimeActivationEpoch => _schedulerOptions.AutomaticReconciliationEpoch
+            ? _schedulerOptions.RuntimeActivationEpoch
+            : _configuredActivationEpoch;
         private readonly bool _requiresActivatedRuntimeAdmission;
         private readonly bool _runtimeAdmissionMisconfigured;
         private readonly string _runtimeActivationScopeKey;
@@ -126,7 +130,7 @@ namespace TickerQ.MongoDB.Infrastructure
                                                   optionsBuilder.RuntimeActivationScope != null;
             _runtimeAdmissionMisconfigured = optionsBuilder.RuntimeSchedulerEnabled &&
                                              optionsBuilder.RuntimeActivationScope == null;
-            _runtimeActivationEpoch = _requiresActivatedRuntimeAdmission
+            _configuredActivationEpoch = _requiresActivatedRuntimeAdmission
                 ? optionsBuilder.RuntimeActivationEpoch
                 : optionsBuilder.ReconciliationEpoch;
             _runtimeActivationMetadataId = _requiresActivatedRuntimeAdmission
@@ -672,10 +676,18 @@ namespace TickerQ.MongoDB.Infrastructure
 
         public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
             ReconciliationActivationScope scope, long targetEpoch, CancellationToken cancellationToken = default)
+            => BeginReconciliationActivationEpochAsync(scope, targetEpoch, null, cancellationToken);
+
+        public bool SupportsActivationManifest => true;
+
+        public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
+            ReconciliationActivationScope scope, long targetEpoch, string manifest,
+            CancellationToken cancellationToken = default)
         {
             if (targetEpoch <= 0) throw new ArgumentOutOfRangeException(nameof(targetEpoch));
+            ActivationManifests.Validate(manifest);
             return MutateActivationStateAsync(
-                ActivationMetadataId(scope), targetEpoch, null, ActivationMutation.Begin, cancellationToken);
+                ActivationMetadataId(scope), targetEpoch, null, ActivationMutation.Begin, cancellationToken, manifest);
         }
 
         public Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(
@@ -740,7 +752,7 @@ namespace TickerQ.MongoDB.Infrastructure
 
         private async Task<ActivationEpochState> MutateActivationStateAsync(
             string activationMetadataId, long targetEpoch, string checkpoint, ActivationMutation mutation,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken, string manifest = null)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (TransactionsKnownUnavailable)
@@ -780,23 +792,26 @@ namespace TickerQ.MongoDB.Infrastructure
                     var phase = (ActivationEpochPhase)current["ActivationPhase"].AsInt32;
                     var currentCheckpoint = ReadOptionalString(current, "ActivationCheckpoint");
                     var version = current["Version"].AsInt64;
+                    var currentState = ToActivationState(current);
 
                     var nextEpoch = epoch;
                     var nextPhase = phase;
                     var nextCheckpoint = currentCheckpoint;
+                    var nextManifest = currentState.Manifest;
+                    var nextManifestHistory = currentState.ManifestHistory;
                     var shouldUpdate = false;
                     switch (mutation)
                     {
-                        case ActivationMutation.Begin when targetEpoch > epoch:
+                        case ActivationMutation.Begin when targetEpoch > epoch ||
+                                                           (targetEpoch == epoch &&
+                                                            phase == ActivationEpochPhase.Pending):
                             shouldUpdate = true;
                             nextEpoch = targetEpoch;
                             nextPhase = ActivationEpochPhase.Activating;
-                            nextCheckpoint = null;
-                            break;
-                        case ActivationMutation.Begin when targetEpoch == epoch &&
-                                                           phase == ActivationEpochPhase.Pending:
-                            shouldUpdate = true;
-                            nextPhase = ActivationEpochPhase.Activating;
+                            if (targetEpoch > epoch) nextCheckpoint = null;
+                            nextManifest = manifest;
+                            nextManifestHistory = ActivationManifests.Advance(
+                                currentState.Manifest, currentState.ManifestHistory, manifest);
                             break;
                         case ActivationMutation.Checkpoint when targetEpoch == epoch &&
                                                                 phase == ActivationEpochPhase.Activating &&
@@ -821,6 +836,9 @@ namespace TickerQ.MongoDB.Infrastructure
                             .Set("ActivationPhase", (int)nextPhase)
                             .Set("ActivationCheckpoint", nextCheckpoint == null
                                 ? BsonNull.Value : (BsonValue)nextCheckpoint)
+                            .Set("ActivationManifest", nextManifest == null
+                                ? BsonNull.Value : (BsonValue)nextManifest)
+                            .Set("ActivationManifestHistory", new BsonArray(nextManifestHistory))
                             .Set("UpdatedAtUtc", _clock.UtcNow)
                             .Inc("Version", 1L), cancellationToken: ct).ConfigureAwait(false);
                     if (result.MatchedCount != 1)
@@ -828,7 +846,8 @@ namespace TickerQ.MongoDB.Infrastructure
 
                     var state = new ActivationEpochState
                     {
-                        Epoch = nextEpoch, Phase = nextPhase, Checkpoint = nextCheckpoint
+                        Epoch = nextEpoch, Phase = nextPhase, Checkpoint = nextCheckpoint,
+                        Manifest = nextManifest, ManifestHistory = nextManifestHistory
                     };
                     if (mutation == ActivationMutation.Commit &&
                         BeforeActivationTransactionCommitForTestAsync != null)
@@ -884,7 +903,12 @@ namespace TickerQ.MongoDB.Infrastructure
                     Epoch = document.GetValue("ActivationEpoch", 0L).ToInt64(),
                     Phase = (ActivationEpochPhase)document.GetValue(
                         "ActivationPhase", (int)ActivationEpochPhase.Pending).ToInt32(),
-                    Checkpoint = ReadOptionalString(document, "ActivationCheckpoint")
+                    Checkpoint = ReadOptionalString(document, "ActivationCheckpoint"),
+                    Manifest = ReadOptionalString(document, "ActivationManifest"),
+                    ManifestHistory = document.TryGetValue("ActivationManifestHistory", out var history) &&
+                                      history.IsBsonArray
+                        ? history.AsBsonArray.Where(x => x.IsString).Select(x => x.AsString).ToArray()
+                        : Array.Empty<string>()
                 };
 
         private static bool CanAdvanceCheckpoint(string current, string requested)
@@ -2685,14 +2709,9 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 foreach (var functionGroup in manifest.Seeds.Where(s => s.CanSeed).GroupBy(s => s.Function))
                 {
-                    var documentedLegacyKeys = functionGroup
-                        .SelectMany(seed => CronSeedIdentity.LegacyAdoptionKeys(
-                            manifest.ApplicationNamespace, seed.StableDefinitionId))
-                        .ToHashSet(StringComparer.Ordinal);
                     var legacy = orphans.Where(x => CronSeedIdentity.CanonicallyEquals(x.Function, functionGroup.Key)
                         && x.SeedOwnerNamespace == null
-                        && (x.SeedKey == null || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
-                            || documentedLegacyKeys.Contains(x.SeedKey))).ToArray();
+                        && x.SeedKey == null).ToArray();
                     if (legacy.Length == 0) continue;
                     if (!manifest.TryGetLegacyOwner(functionGroup.Key, out var explicitOwner))
                         throw new InvalidOperationException(
@@ -2757,24 +2776,15 @@ namespace TickerQ.MongoDB.Infrastructure
                     continue;
 
                 var seedKey = manifest.SeedKeyFor(seed);
-                var documentedLegacyKeys = manifest.IsLegacyGlobal
-                    ? Array.Empty<string>()
-                    : CronSeedIdentity.LegacyAdoptionKeys(
-                        manifest.ApplicationNamespace, seed.StableDefinitionId);
-                var acceptedSeedKeys = manifest.IsLegacyGlobal
-                    ? Array.Empty<string>()
-                    : CronSeedIdentity.AcceptedSeedKeys(
-                        manifest.ApplicationNamespace, seed.StableDefinitionId);
 
                 var group = manifest.IsLegacyGlobal
                     ? (byFunction.TryGetValue(seed.Function, out var legacyGroup) ? legacyGroup : null)
                     : existing.Where(x =>
-                            (acceptedSeedKeys.Contains(x.SeedKey, StringComparer.Ordinal)
+                            (string.Equals(x.SeedKey, seedKey, StringComparison.Ordinal)
                              && CronSeedIdentity.CanonicallyEquals(x.SeedOwnerNamespace, manifest.ApplicationNamespace))
                             || (CronSeedIdentity.CanonicallyEquals(x.Function, seed.Function) && x.SeedOwnerNamespace == null
                                 && manifest.MayAdoptLegacy(seed.Function)
-                                && (x.SeedKey == null || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
-                                    || documentedLegacyKeys.Contains(x.SeedKey, StringComparer.Ordinal))))
+                                && x.SeedKey == null))
                         .OrderBy(x => x.Id).ToList();
                 if (group is { Count: > 0 })
                 {
@@ -2806,41 +2816,15 @@ namespace TickerQ.MongoDB.Infrastructure
                         materiallyChanged = true;
                     }
 
-                    if (!string.Equals(cron.Expression, seed.Expression, StringComparison.Ordinal))
+                    // Expression, contract identity (seeded rows only), retries, timeout, and the full
+                    // SeedCronTickers definition. Applied to the loaded copy, then written field by field.
+                    var seedChange = DefinedCronSeedApplier.Apply(cron, seed, !string.IsNullOrEmpty(cron.InitIdentifier));
+                    if (seedChange.Changed)
                     {
-                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.Expression, seed.Expression));
+                        AddSeedDefinitionSets(cron, sets);
                         materiallyChanged = true;
-                        definitionChanged = true;
                     }
-
-                    if (!string.IsNullOrEmpty(cron.InitIdentifier)
-                        && !seed.MatchesIdentity(cron.RequestContractVersion, cron.RequestContractFingerprint))
-                    {
-                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.RequestContractVersion, seed.RequestContractVersion));
-                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.RequestContractFingerprint, seed.RequestContractFingerprint));
-                        materiallyChanged = true;
-                        definitionChanged = true;
-                    }
-
-                    if (cron.Retries != seed.Retries)
-                    {
-                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.Retries, seed.Retries));
-                        materiallyChanged = true;
-                        definitionChanged = true;
-                    }
-                    if (!(cron.RetryIntervals ?? Array.Empty<int>()).SequenceEqual(
-                            seed.RetryIntervals ?? Array.Empty<int>()))
-                    {
-                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.RetryIntervals, seed.RetryIntervals));
-                        materiallyChanged = true;
-                        definitionChanged = true;
-                    }
-                    if (cron.TimeoutSeconds != seed.TimeoutSeconds)
-                    {
-                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.TimeoutSeconds, seed.TimeoutSeconds));
-                        materiallyChanged = true;
-                        definitionChanged = true;
-                    }
+                    definitionChanged |= seedChange.DefinitionChanged;
 
                     if (definitionChanged)
                     {
@@ -2921,13 +2905,8 @@ namespace TickerQ.MongoDB.Infrastructure
                         InitIdentifier = $"MemoryTicker_Seeded_{seed.Function}",
                         CreatedAt = now,
                         UpdatedAt = now,
-                        Request = Array.Empty<byte>(),
-                        RequestContractVersion = seed.RequestContractVersion,
-                        RequestContractFingerprint = seed.RequestContractFingerprint,
-                        Retries = seed.Retries,
-                        RetryIntervals = seed.RetryIntervals,
-                        TimeoutSeconds = seed.TimeoutSeconds
                     };
+                    DefinedCronSeedApplier.Initialize(entity, seed);
                     Stamp(entity);
 
                     try
@@ -5398,5 +5377,30 @@ namespace TickerQ.MongoDB.Infrastructure
             }
             return collected;
         }
+
+    // Writes every field DefinedCronSeedApplier may change; unchanged fields are rewritten with their
+    // current values, which keeps the update a single atomic, revision-guarded operation.
+    private static void AddSeedDefinitionSets(TCronTicker cron, List<UpdateDefinition<TCronTicker>> sets)
+    {
+        var u = Builders<TCronTicker>.Update;
+        sets.Add(u.Set(x => x.Expression, cron.Expression));
+        sets.Add(u.Set(x => x.RequestContractVersion, cron.RequestContractVersion));
+        sets.Add(u.Set(x => x.RequestContractFingerprint, cron.RequestContractFingerprint));
+        sets.Add(u.Set(x => x.Retries, cron.Retries));
+        sets.Add(u.Set(x => x.RetryIntervals, cron.RetryIntervals));
+        sets.Add(u.Set(x => x.TimeoutSeconds, cron.TimeoutSeconds));
+        sets.Add(u.Set(x => x.TimeZoneId, cron.TimeZoneId));
+        sets.Add(u.Set(x => x.SchedulePolicyName, cron.SchedulePolicyName));
+        sets.Add(u.Set(x => x.SchedulePolicyVersion, cron.SchedulePolicyVersion));
+        sets.Add(u.Set(x => x.BlockedOccurrenceBehavior, cron.BlockedOccurrenceBehavior));
+        sets.Add(u.Set(x => x.MissedExecutionAction, cron.MissedExecutionAction));
+        sets.Add(u.Set(x => x.MaximumLateness, cron.MaximumLateness));
+        sets.Add(u.Set(x => x.CatchUpMode, cron.CatchUpMode));
+        sets.Add(u.Set(x => x.SkipIfAlreadyRunning, cron.SkipIfAlreadyRunning));
+        sets.Add(u.Set(x => x.OnStale, cron.OnStale));
+        sets.Add(u.Set(x => x.Request, cron.Request));
+        sets.Add(u.Set(x => x.Chain, cron.Chain));
+        sets.Add(u.Set(x => x.Description, cron.Description));
+    }
     }
 }

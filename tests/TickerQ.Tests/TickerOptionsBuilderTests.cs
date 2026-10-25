@@ -120,6 +120,36 @@ public class TickerOptionsBuilderTests
     }
 
     [Theory]
+    [InlineData("Production", "orders-production")]
+    [InlineData(" Development ", "orders-development")]
+    [InlineData("Staging", "orders-staging")]
+    public void UseApplicationNamespace_WithEnvironment_AppendsTheLowerCaseEnvironmentName(string environmentName, string expected)
+    {
+        var executionContext = new TickerExecutionContext();
+        var builder = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(
+            executionContext, new SchedulerOptionsBuilder());
+        var environment = Substitute.For<Microsoft.Extensions.Hosting.IHostEnvironment>();
+        environment.EnvironmentName.Returns(environmentName);
+
+        builder.UseApplicationNamespace(" orders ", environment);
+
+        Assert.Equal(expected, executionContext.OptionsSeeding.ApplicationNamespace);
+    }
+
+    [Fact]
+    public void UseApplicationNamespace_WithEnvironment_RejectsMissingNameOrEnvironment()
+    {
+        var builder = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(
+            new TickerExecutionContext(), new SchedulerOptionsBuilder());
+        var unnamed = Substitute.For<Microsoft.Extensions.Hosting.IHostEnvironment>();
+        unnamed.EnvironmentName.Returns(" ");
+
+        Assert.Throws<ArgumentException>(() => builder.UseApplicationNamespace(" ", unnamed));
+        Assert.Throws<ArgumentNullException>(() => builder.UseApplicationNamespace("orders", null!));
+        Assert.Throws<ArgumentException>(() => builder.UseApplicationNamespace("orders", unnamed));
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]

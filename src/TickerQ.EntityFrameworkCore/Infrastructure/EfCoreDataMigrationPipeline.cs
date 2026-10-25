@@ -114,7 +114,8 @@ public sealed class EfCoreDataMigrationPipeline
                 }
                 catch (DbUpdateConcurrencyException) when (attempt + 1 < maxAttempts) { }
                 catch (DbUpdateException) when (attempt + 1 < maxAttempts) { }
-                catch (Exception ex) when (attempt + 1 < maxAttempts && IsSerializationFailure(ex)) { }
+                catch (Exception ex) when (attempt + 1 < maxAttempts &&
+                                           RelationalTransactionConflicts.IsConflictInChain(ex)) { }
 
                 await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(50, attempt + 1)), cancellationToken)
                     .ConfigureAwait(false);
@@ -164,14 +165,6 @@ public sealed class EfCoreDataMigrationPipeline
         return (DbContext)constructor.Invoke([options]);
     }
 
-    private static bool IsSerializationFailure(Exception exception)
-    {
-        for (var current = exception; current != null; current = current.InnerException)
-            if (current is DbException db && RelationalTransactionConflicts.IsConflict(db, out _))
-                return true;
-        return false;
-    }
-
     private static async Task ProveProfessionalSchemaAsync(DbContext context, CancellationToken cancellationToken)
     {
         var model = context.Model;
@@ -188,7 +181,8 @@ public sealed class EfCoreDataMigrationPipeline
                 nameof(TickerQStoreMetadata.SchemaVersion), nameof(TickerQStoreMetadata.DataVersion),
                 nameof(TickerQStoreMetadata.LastMigrationId), nameof(TickerQStoreMetadata.Version),
                 nameof(TickerQStoreMetadata.ActivationEpoch), nameof(TickerQStoreMetadata.ActivationPhase),
-                nameof(TickerQStoreMetadata.ActivationCheckpoint)),
+                nameof(TickerQStoreMetadata.ActivationCheckpoint), nameof(TickerQStoreMetadata.ActivationManifest),
+                nameof(TickerQStoreMetadata.ActivationManifestHistory)),
             Requirement(model.FindEntityType(typeof(NodeFinalizationOutboxEntity)),
                 typeof(NodeFinalizationOutboxEntity).GetProperties().Select(x => x.Name).ToArray()),
             Requirement(model.FindEntityType(typeof(TickerQNodeEntity)),
@@ -301,7 +295,7 @@ public sealed class EfCoreDataMigrationPipeline
         await using var transaction = await context.Database
             .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         var metadataSet = context.Set<TickerQStoreMetadata>();
-        if (!await metadataSet.AsNoTracking().AnyAsync(
+        if (!await metadataSet.AsNoTracking().ExistsAsync(
                 x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                      x.Id == TickerQStoreMetadata.TimeTickerGraphMutationSentinelId,
                 cancellationToken).ConfigureAwait(false))

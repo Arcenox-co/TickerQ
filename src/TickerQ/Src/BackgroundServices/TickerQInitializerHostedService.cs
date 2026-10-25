@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using TickerQ.Provider;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces;
@@ -29,6 +30,8 @@ internal sealed class TickerQInitializerHostedService : IHostedService
     private readonly IServiceProvider _serviceProvider;
     private readonly IConfiguration _configuration;
     private readonly TickerQLicenseStateProvider _licenseState;
+    private readonly ILogger<TickerQInitializerHostedService> _logger;
+    private readonly ITickerClock _clock;
 
     /// <summary>
     /// Set to true by <c>UseTickerQ</c> to signal that this hosted service
@@ -48,6 +51,8 @@ internal sealed class TickerQInitializerHostedService : IHostedService
         _serviceProvider = serviceProvider;
         _configuration = configuration;
         _licenseState = licenseState;
+        _logger = serviceProvider.GetService<ILogger<TickerQInitializerHostedService>>();
+        _clock = serviceProvider.GetService<ITickerClock>() ?? new TickerSystemClock();
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -79,10 +84,11 @@ internal sealed class TickerQInitializerHostedService : IHostedService
                 "Scheduler startup requires a persistence provider with durable reconciliation activation epoch support.");
 
         var schedulerOptions = _serviceProvider.GetRequiredService<SchedulerOptionsBuilder>();
+        var automatic = schedulerOptions.AutomaticReconciliationEpoch;
         var targetEpoch = schedulerOptions.HasRuntimeActivationScopeBinding
             ? schedulerOptions.RuntimeActivationEpoch
             : _executionContext.OptionsSeeding?.ReconciliationEpoch ?? 1;
-        if (targetEpoch <= 0)
+        if (targetEpoch <= 0 && !automatic)
             throw new InvalidOperationException("Scheduler startup requires an explicit positive UseReconciliationEpoch value.");
         var activationScope = schedulerOptions.HasRuntimeActivationScopeBinding
             ? schedulerOptions.RuntimeActivationScope
@@ -94,12 +100,32 @@ internal sealed class TickerQInitializerHostedService : IHostedService
             && !internalTickerManager.SupportsAuthoritativeCronReconciliation)
             throw new NotSupportedException(
                 "The persistence provider does not support authoritative defined-Cron manifest reconciliation; startup stopped before invoking a lossy legacy fallback.");
+        if (automatic && !internalTickerManager.SupportsActivationManifest)
+            throw new NotSupportedException(
+                "The persistence provider cannot record startup manifests, so TickerQ cannot manage the reconciliation epoch automatically. Configure UseReconciliationEpoch(...) explicitly.");
 
         // Schema-only prerequisites (notably EF AutoMigrateDatabase) must run before durable Begin,
         // because a pre-protocol store does not yet contain the activation metadata table. This phase
         // cannot reconcile ticker data, and the local scheduler gate remains closed throughout.
         foreach (var prerequisite in _serviceProvider.GetServices<ITickerQPersistencePrerequisiteBootstrapper>())
             await prerequisite.BootstrapAsync(cancellationToken).ConfigureAwait(false);
+
+        // Seed declarations are built and checked here, before any epoch is claimed, so a broken
+        // declaration fails this host without fencing the deployment that is running.
+        var activator = _serviceProvider.GetService<TickerQReconciliationActivator>()
+                        ?? new TickerQReconciliationActivator(_serviceProvider, _executionContext);
+        var manifestFactory = _executionContext.OptionsSeeding?.StartupManifestFactory;
+        var manifest = manifestFactory == null
+            ? null
+            : await manifestFactory(_serviceProvider, cancellationToken).ConfigureAwait(false);
+        activator.Manifest = manifest;
+
+        if (automatic)
+        {
+            await StartWithAutomaticEpochAsync(internalTickerManager, schedulerOptions, activator, activationScope,
+                manifest, activationGate, cancellationToken).ConfigureAwait(false);
+            return;
+        }
 
         var legacyAdoption = _executionContext.OptionsSeeding?.LegacyRuntimePartitionAdoption;
         if (legacyAdoption != null)
@@ -115,74 +141,25 @@ internal sealed class TickerQInitializerHostedService : IHostedService
                 .ConfigureAwait(false);
         }
 
-        var begin = await internalTickerManager.BeginReconciliationActivationEpochAsync(
-            activationScope, targetEpoch, cancellationToken).ConfigureAwait(false);
-        if (IsExact(begin, targetEpoch, Utilities.Models.ActivationEpochPhase.Activated))
+        var begin = await BeginAsync(internalTickerManager, activationScope, targetEpoch, manifest, cancellationToken)
+            .ConfigureAwait(false);
+        if (TickerQReconciliationActivator.IsExact(begin, targetEpoch, Utilities.Models.ActivationEpochPhase.Activated))
         {
-            // Without durable manifest identity, the only safe same-epoch restart is to skip durable
-            // mutations. Process-local provider startup still has to run for this host before its gate opens.
-            foreach (var readiness in _serviceProvider.GetServices<ITickerQPersistenceReadinessProbe>())
-                await readiness.ProbeAsync(cancellationToken).ConfigureAwait(false);
-            RunExternalProviderApplicationAction();
+            // An explicit epoch skips durable mutations on a same-epoch restart. Process-local provider
+            // startup still has to run for this host before its gate opens.
+            if (manifest != null && begin.Manifest != null &&
+                !string.Equals(begin.Manifest, manifest, StringComparison.Ordinal))
+                _logger?.LogWarning(
+                    "TickerQ startup inputs (functions, request contracts, or seeds) changed since reconciliation epoch {Epoch} was activated, but UseReconciliationEpoch({Epoch}) was not increased, so the changes are not applied. Increase the epoch, or remove UseReconciliationEpoch to let TickerQ manage it.",
+                    targetEpoch, targetEpoch);
+            await activator.RunProviderStartupActionsAsync(cancellationToken).ConfigureAwait(false);
             activationGate?.SignalActivated();
             return;
         }
-        RequireExact(begin, targetEpoch, Utilities.Models.ActivationEpochPhase.Activating, "begin");
+        TickerQReconciliationActivator.RequireExact(begin, targetEpoch, Utilities.Models.ActivationEpochPhase.Activating, "begin");
 
-        // Provider bootstrap runs before any migration, reconciliation, seeding, or scheduler query.
-        foreach (var bootstrapper in _serviceProvider.GetServices<ITickerQPersistenceBootstrapper>())
-            await bootstrapper.BootstrapAsync(cancellationToken).ConfigureAwait(false);
-        await CheckpointAsync(internalTickerManager, activationScope, targetEpoch,
-            "01-bootstrap-complete", cancellationToken).ConfigureAwait(false);
-
-        await internalTickerManager.RepairTimeTickerChainsAsync(cancellationToken).ConfigureAwait(false);
-        await CheckpointAsync(internalTickerManager, activationScope, targetEpoch,
-            "02-chain-repair-complete", cancellationToken).ConfigureAwait(false);
-
-        var options = _executionContext.OptionsSeeding;
-        if (options == null || options.SeedDefinedCronTickers)
-        {
-            using var startupAdmission = Utilities.Models.StartupSeederAdmissionContext.Enter(
-                activationScope.ScopeKey, targetEpoch);
-            await SeedDefinedCronTickers(_serviceProvider, cancellationToken).ConfigureAwait(false);
-        }
-        await CheckpointAsync(internalTickerManager, activationScope, targetEpoch,
-            "03-definition-reconciliation-complete", cancellationToken).ConfigureAwait(false);
-
-        // Constraints/readiness that depend on reconciled data complete before consumer seeders.
-        foreach (var finalizer in _serviceProvider.GetServices<ITickerQPersistenceFinalizer>())
-            await finalizer.FinalizeAsync(cancellationToken).ConfigureAwait(false);
-        await CheckpointAsync(internalTickerManager, activationScope, targetEpoch,
-            "04-finalization-complete", cancellationToken).ConfigureAwait(false);
-
-        if (options?.SchedulePolicySeederAction != null || options?.TimeSeederAction != null || options?.CronSeederAction != null)
-        {
-            using var startupAdmission = Utilities.Models.StartupSeederAdmissionContext.Enter(
-                activationScope.ScopeKey, targetEpoch);
-            if (options.SchedulePolicySeederAction != null)
-                await options.SchedulePolicySeederAction(_serviceProvider, cancellationToken).ConfigureAwait(false);
-            if (options.TimeSeederAction != null)
-                await options.TimeSeederAction(_serviceProvider, cancellationToken).ConfigureAwait(false);
-            if (options.CronSeederAction != null)
-                await options.CronSeederAction(_serviceProvider, cancellationToken).ConfigureAwait(false);
-        }
-        await CheckpointAsync(internalTickerManager, activationScope, targetEpoch,
-            "05-user-seeding-complete", cancellationToken).ConfigureAwait(false);
-
-        // Preserve the activation-protocol phase boundary used by rolling upgrades. Missed work is
-        // now decided per ticker during normal acquisition/execution instead of by a startup sweep.
-        await CheckpointAsync(internalTickerManager, activationScope, targetEpoch,
-            "06-stale-occurrence-handling-complete", cancellationToken).ConfigureAwait(false);
-
-        foreach (var readiness in _serviceProvider.GetServices<ITickerQPersistenceReadinessProbe>())
-            await readiness.ProbeAsync(cancellationToken).ConfigureAwait(false);
-        RunExternalProviderApplicationAction();
-        await CheckpointAsync(internalTickerManager, activationScope, targetEpoch,
-            "07-provider-startup-actions-complete", cancellationToken).ConfigureAwait(false);
-
-        var committed = await internalTickerManager.CommitReconciliationActivationEpochAsync(
-            activationScope, targetEpoch, cancellationToken).ConfigureAwait(false);
-        RequireExact(committed, targetEpoch, Utilities.Models.ActivationEpochPhase.Activated, "commit");
+        await activator.RunAsync(internalTickerManager, activationScope, targetEpoch, cancellationToken)
+            .ConfigureAwait(false);
 
         // This in-process latch is opened only after every required durable startup phase succeeded.
         // There is deliberately no cancellation check after this point: reporting cancellation after
@@ -196,93 +173,103 @@ internal sealed class TickerQInitializerHostedService : IHostedService
         }
     }
 
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-
-    private void RunExternalProviderApplicationAction()
+    /// <summary>
+    /// Startup without a configured epoch. The startup manifest decides: the same manifest joins (or
+    /// resumes) the current epoch, a new one claims the next epoch and reconciles, and one from an earlier
+    /// deployment stays fenced, unless no node runs the current epoch any more, in which case it takes over.
+    /// </summary>
+    private async Task StartWithAutomaticEpochAsync(
+        IInternalTickerManager manager, SchedulerOptionsBuilder schedulerOptions,
+        TickerQReconciliationActivator activator, Utilities.Models.ReconciliationActivationScope scope,
+        string manifest, ITickerQActivationGate activationGate, CancellationToken cancellationToken)
     {
-        var action = _executionContext.ExternalProviderApplicationAction;
-        if (action == null)
-            return;
+        if (manifest == null)
+            throw new InvalidOperationException("Automatic reconciliation epochs require a startup manifest.");
 
-        action(_serviceProvider);
-        _executionContext.ExternalProviderApplicationAction = null;
-    }
-
-    private static async Task CheckpointAsync(
-        IInternalTickerManager manager, Utilities.Models.ReconciliationActivationScope scope,
-        long targetEpoch, string checkpoint, CancellationToken cancellationToken)
-    {
-        var state = await manager.AdvanceReconciliationCheckpointAsync(
-            scope, targetEpoch, checkpoint, cancellationToken).ConfigureAwait(false);
-        RequireExact(state, targetEpoch, Utilities.Models.ActivationEpochPhase.Activating, "checkpoint");
-    }
-
-    private static bool IsExact(Utilities.Models.ActivationEpochState state, long epoch,
-        Utilities.Models.ActivationEpochPhase phase)
-        => state != null && state.Epoch == epoch && state.Phase == phase;
-
-    private static void RequireExact(Utilities.Models.ActivationEpochState state, long epoch,
-        Utilities.Models.ActivationEpochPhase phase, string operation)
-    {
-        if (!IsExact(state, epoch, phase))
-            throw new InvalidOperationException(
-                $"Reconciliation activation {operation} returned '{state?.ToString() ?? "<null>"}'; " +
-                $"expected exact epoch={epoch}, phase={phase}. Startup remains fail-closed.");
-    }
-
-    private static async Task SeedDefinedCronTickers(IServiceProvider serviceProvider, CancellationToken cancellationToken)
-    {
-        var internalTickerManager = serviceProvider.GetRequiredService<IInternalTickerManager>();
-
-        var descriptors = TickerFunctionProvider.TickerFunctionDescriptors;
-
-        var functionsToSeed = new List<Utilities.Models.DefinedCronTickerSeed>();
-        foreach (var (function, value) in TickerFunctionProvider.TickerFunctions)
+        const int maxAttempts = 16;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
-            if (string.IsNullOrEmpty(value.cronExpression))
-                continue;
+            var state = await manager.GetReconciliationActivationStateAsync(scope, cancellationToken).ConfigureAwait(false);
+            var decision = AutomaticEpochDecision.Decide(state, manifest);
 
-            // Resolve the authoritative contract identity for this code-defined cron so seeded rows
-            // carry it and stay under execution-time drift enforcement (Build() has already run, so a
-            // descriptor exists for every executable function; request-less functions have Request == null).
-            int? contractVersion = null;
-            string fingerprint = null;
-            var canSeed = true;
-            if (descriptors.TryGetValue(function, out var descriptor))
+            if (decision.Action == AutomaticEpochAction.Fenced)
             {
-                var contract = descriptor.Request;
-
-                // Code-defined seeds have no payload. Required contracts cannot be satisfied, and an
-                // incomplete optional identity cannot participate in drift enforcement. Skip both
-                // rather than persist a row that is either invalid or only partially authoritative.
-                canSeed = contract is not { Required: true }
-                    && (contract == null || !string.IsNullOrWhiteSpace(contract.Fingerprint));
-
-                contractVersion = descriptor.ContractVersion;
-                fingerprint = contract?.Fingerprint;
+                if (state.Phase == Utilities.Models.ActivationEpochPhase.Activated && manager.SupportsClusterControl &&
+                    !await TickerQReconciliationActivator.AnyLiveNodeAtAsync(
+                        manager, state.Epoch, null, _clock.UtcNow, cancellationToken).ConfigureAwait(false))
+                {
+                    _logger?.LogInformation(
+                        "No TickerQ node runs reconciliation epoch {Epoch} any more; this host takes over with its own startup inputs.",
+                        state.Epoch);
+                    decision = new AutomaticEpochDecision(AutomaticEpochAction.Claim, state.Epoch + 1);
+                }
+                else
+                {
+                    _logger?.LogWarning(
+                        "This host's startup inputs belong to an earlier deployment than reconciliation epoch {Epoch}. It stays fenced and processes no jobs until it is replaced, or until no node runs epoch {Epoch} any more.",
+                        state.Epoch, state.Epoch);
+                    await activator.RunProviderStartupActionsAsync(cancellationToken).ConfigureAwait(false);
+                    activationGate?.SignalActivated();
+                    return;
+                }
             }
 
-            functionsToSeed.Add(new Utilities.Models.DefinedCronTickerSeed(
-                function, value.cronExpression, contractVersion, fingerprint, canSeed,
-                stableDefinitionId: function, retries: 0, retryIntervals: null, timeoutSeconds: null));
+            if (decision.Action == AutomaticEpochAction.Join)
+            {
+                schedulerOptions.ResolveRuntimeActivationEpoch(decision.Epoch);
+                _logger?.LogInformation("TickerQ joined reconciliation epoch {Epoch}.", decision.Epoch);
+                await activator.RunProviderStartupActionsAsync(cancellationToken).ConfigureAwait(false);
+                activationGate?.SignalActivated();
+                return;
+            }
+
+            if (decision.Action == AutomaticEpochAction.Claim)
+                await activator.PreflightAsync(cancellationToken).ConfigureAwait(false);
+            var begin = await manager.BeginReconciliationActivationEpochAsync(
+                scope, decision.Epoch, manifest, cancellationToken).ConfigureAwait(false);
+            if (begin.Epoch != decision.Epoch || !string.Equals(begin.Manifest, manifest, StringComparison.Ordinal))
+                continue; // Another deployment claimed first; decide again from the new state.
+
+            schedulerOptions.ResolveRuntimeActivationEpoch(decision.Epoch);
+            if (begin.Phase == Utilities.Models.ActivationEpochPhase.Activated)
+            {
+                await activator.RunProviderStartupActionsAsync(cancellationToken).ConfigureAwait(false);
+                activationGate?.SignalActivated();
+                return;
+            }
+
+            TickerQReconciliationActivator.RequireExact(
+                begin, decision.Epoch, Utilities.Models.ActivationEpochPhase.Activating, "begin");
+            if (decision.Action == AutomaticEpochAction.Claim)
+                _logger?.LogInformation(
+                    "TickerQ startup inputs changed; reconciling under automatic epoch {Epoch}.", decision.Epoch);
+            try
+            {
+                await activator.RunAsync(manager, scope, decision.Epoch, cancellationToken).ConfigureAwait(false);
+            }
+            catch (TickerQReconciliationActivator.ActivationSupersededException)
+            {
+                // Another deployment started at the same time and claimed a newer epoch. Its claim already
+                // fences this host, so stay fenced like any host of an earlier deployment.
+                _logger?.LogWarning(
+                    "Another deployment claimed a newer reconciliation epoch while this host was activating epoch {Epoch}. It stays fenced and processes no jobs until no node runs the newer epoch.",
+                    decision.Epoch);
+                await activator.RunProviderStartupActionsAsync(cancellationToken).ConfigureAwait(false);
+            }
+            activationGate?.SignalActivated();
+            return;
         }
 
-        var options = serviceProvider.GetRequiredService<TickerExecutionContext>().OptionsSeeding;
-        var applicationNamespace = options?.ApplicationNamespace;
-        if (applicationNamespace == null)
-            await internalTickerManager.MigrateDefinedCronTickers(functionsToSeed.ToArray(), cancellationToken);
-        else
-        {
-            var ownership = options.LegacyDefinedCronOwnership == null
-                ? new Dictionary<string, string>(StringComparer.Ordinal)
-                : new Dictionary<string, string>(options.LegacyDefinedCronOwnership, StringComparer.Ordinal);
-            if (options.AdoptAllLegacyDefinedCronTickers)
-                foreach (var seed in functionsToSeed)
-                    ownership.TryAdd(seed.Function, applicationNamespace);
-
-            await internalTickerManager.MigrateDefinedCronTickers(
-                new Utilities.Models.DefinedCronSeedManifest(applicationNamespace, functionsToSeed, ownership), cancellationToken);
-        }
+        throw new InvalidOperationException(
+            "TickerQ could not settle on a reconciliation epoch because other deployments kept claiming newer ones.");
     }
 
+    private static Task<Utilities.Models.ActivationEpochState> BeginAsync(
+        IInternalTickerManager manager, Utilities.Models.ReconciliationActivationScope scope, long targetEpoch,
+        string manifest, CancellationToken cancellationToken)
+        => manifest != null && manager.SupportsActivationManifest
+            ? manager.BeginReconciliationActivationEpochAsync(scope, targetEpoch, manifest, cancellationToken)
+            : manager.BeginReconciliationActivationEpochAsync(scope, targetEpoch, cancellationToken);
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

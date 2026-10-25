@@ -299,14 +299,34 @@ public class DashboardOptionsBuilder
     /// there with <c>?returnUrl=…</c> so the user can sign in on the host app
     /// and land back on the dashboard. API/fetch clients still get plain 401s.
     /// </param>
-    public DashboardOptionsBuilder WithHostAuthentication(string? policy = null, string? loginRedirectPath = null)
+    /// <param name="logoutPath">
+    /// Optional host-app logout endpoint (e.g. <c>/account/logout</c>). When set, the dashboard shows the
+    /// signed-in user's Sign out button and sends the browser there; the host ends its own session.
+    /// </param>
+    public DashboardOptionsBuilder WithHostAuthentication(string? policy = null, string? loginRedirectPath = null,
+        string? logoutPath = null)
     {
         Auth.Mode = AuthMode.Host;
         Auth.HostAuthorizationPolicy = policy;
         Auth.HostLoginRedirectPath = loginRedirectPath;
+        Auth.HostLogoutPath = logoutPath;
         return this;
     }
     
+    /// <summary>
+    /// Chooses which claims of the host identity the dashboard shows as the signed-in user's name, in
+    /// preference order, for example <c>UseUserNameClaim("name", "email")</c>. The first claim with a value
+    /// wins; otherwise the identity's <c>Name</c> is shown. Host authentication only. The user id that keys
+    /// per-user data such as assistant history is unaffected, so changing the displayed claim keeps it.
+    /// </summary>
+    public DashboardOptionsBuilder UseUserNameClaim(params string[] claimTypes)
+    {
+        if (claimTypes == null || claimTypes.Length == 0 || claimTypes.Any(string.IsNullOrWhiteSpace))
+            throw new ArgumentException("Provide at least one non-empty claim type.", nameof(claimTypes));
+        Auth.HostUserNameClaims = claimTypes.Select(claim => claim.Trim()).ToArray();
+        return this;
+    }
+
     /// <summary>Configure custom authentication with validation function</summary>
     public DashboardOptionsBuilder WithCustomAuth(Func<string, bool> validator)
     {

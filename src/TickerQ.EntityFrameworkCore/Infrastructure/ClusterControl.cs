@@ -38,7 +38,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 .SetProperty(x => x.QueuedExecutions, node.QueuedExecutions)
                 .SetProperty(x => x.ActiveWorkflows, node.ActiveWorkflows)
                 .SetProperty(x => x.WaitingForFunction, node.WaitingForFunction)
-                .SetProperty(x => x.RetryingExecutions, node.RetryingExecutions), cancellationToken)
+                .SetProperty(x => x.RetryingExecutions, node.RetryingExecutions)
+                .SetProperty(x => x.ActivationEpoch, node.ActivationEpoch), cancellationToken)
             .ConfigureAwait(false);
         if (changed != 0) return;
 
@@ -47,7 +48,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         catch (DbUpdateException)
         {
             // A concurrent first heartbeat inserted the node. The next heartbeat refreshes it.
-            if (!await rows.AsNoTracking().AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey
+            if (!await rows.AsNoTracking().ExistsAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey
                     && x.NodeKey == node.NodeKey, cancellationToken).ConfigureAwait(false)) throw;
         }
     }
@@ -95,13 +96,13 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
     {
         using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var rows = session.Context.Set<TickerQControlCommandEntity>();
-        if (await rows.AsNoTracking().AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey
+        if (await rows.AsNoTracking().ExistsAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey
                 && x.Id == command.Id, cancellationToken).ConfigureAwait(false)) return true;
         rows.Add(ToEntity(command));
         try { await session.Context.SaveChangesAsync(cancellationToken).ConfigureAwait(false); return true; }
         catch (DbUpdateException)
         {
-            return await rows.AsNoTracking().AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey
+            return await rows.AsNoTracking().ExistsAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey
                 && x.Id == command.Id, cancellationToken).ConfigureAwait(false);
         }
     }
@@ -152,7 +153,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         StartedAtUtc = x.StartedAtUtc, LastSeenAtUtc = x.LastSeenAtUtc, IsRunning = x.IsRunning,
         MaxConcurrency = x.MaxConcurrency, FunctionCount = x.FunctionCount, ActiveExecutions = x.ActiveExecutions,
         QueuedExecutions = x.QueuedExecutions, ActiveWorkflows = x.ActiveWorkflows,
-        WaitingForFunction = x.WaitingForFunction, RetryingExecutions = x.RetryingExecutions
+        WaitingForFunction = x.WaitingForFunction, RetryingExecutions = x.RetryingExecutions,
+        ActivationEpoch = x.ActivationEpoch
     };
 
     private static TickerQNodeRecord ToRecord(TickerQNodeEntity x) => new()
@@ -162,7 +164,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         StartedAtUtc = x.StartedAtUtc, LastSeenAtUtc = x.LastSeenAtUtc, IsRunning = x.IsRunning,
         MaxConcurrency = x.MaxConcurrency, FunctionCount = x.FunctionCount, ActiveExecutions = x.ActiveExecutions,
         QueuedExecutions = x.QueuedExecutions, ActiveWorkflows = x.ActiveWorkflows,
-        WaitingForFunction = x.WaitingForFunction, RetryingExecutions = x.RetryingExecutions
+        WaitingForFunction = x.WaitingForFunction, RetryingExecutions = x.RetryingExecutions,
+        ActivationEpoch = x.ActivationEpoch
     };
 
     private TickerQControlCommandEntity ToEntity(TickerQControlCommand x) => new()

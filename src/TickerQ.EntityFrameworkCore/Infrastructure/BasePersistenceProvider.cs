@@ -68,7 +68,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         catch (DbUpdateException)
         {
             // Another administrator/replica may have inserted the singleton first.
-            if (await rows.AsNoTracking().AnyAsync(x => x.ApplicationNamespaceKey == key, cancellationToken).ConfigureAwait(false)) return false;
+            if (await rows.AsNoTracking().ExistsAsync(x => x.ApplicationNamespaceKey == key, cancellationToken).ConfigureAwait(false)) return false;
             throw;
         }
     }
@@ -81,10 +81,10 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         _nodeFinalizationOutboxReadiness = serviceProvider.GetService<IEfCoreNodeFinalizationOutboxReadiness>();
         _lockHolder = optionsBuilder.ExecutionOwnerId;
         _schedulerOptions = optionsBuilder;
+        _configuredActivationEpoch = optionsBuilder.RuntimeActivationEpoch;
         _runtimeSchedulerEnabled = optionsBuilder.RuntimeSchedulerEnabled;
         _hasRuntimeActivationScopeBinding = optionsBuilder.HasRuntimeActivationScopeBinding;
         _requiresActivatedRuntimeAdmission = _runtimeSchedulerEnabled && _hasRuntimeActivationScopeBinding;
-        _runtimeActivationEpoch = optionsBuilder.RuntimeActivationEpoch;
         _runtimePartitionKey = (optionsBuilder.RuntimePartition ?? TickerQRuntimePartition.LegacyGlobal).StorageKey;
         _runtimeActivationScopeKey = _hasRuntimeActivationScopeBinding
             ? _schedulerOptions.RuntimeActivationScope?.ScopeKey ?? TickerQStoreMetadata.SingletonId
@@ -255,7 +255,11 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
     private readonly bool _runtimeSchedulerEnabled;
     private readonly bool _hasRuntimeActivationScopeBinding;
     private readonly bool _requiresActivatedRuntimeAdmission;
-    private readonly long _runtimeActivationEpoch;
+    private readonly long _configuredActivationEpoch;
+    // An automatic epoch is resolved after construction; an explicit one is fixed for the process.
+    private long _runtimeActivationEpoch => _schedulerOptions.AutomaticReconciliationEpoch
+        ? _schedulerOptions.RuntimeActivationEpoch
+        : _configuredActivationEpoch;
     protected readonly string _runtimePartitionKey;
     protected string CronExpressionsCacheKey => $"cron:expressions:{_runtimePartitionKey}";
     protected internal Func<CancellationToken, Task> AfterRunnableAdmissionFenceForTestAsync { get; set; }
@@ -270,7 +274,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         // This indexed predicate read and adoption's read/insert run under Serializable transactions.
         // The absent-row range is therefore fenced during first adoption; once inserted, the durable
         // tombstone rejects every later legacy creation/publication attempt.
-        return !await dbContext.Set<TickerQStoreMetadata>().AsNoTracking().AnyAsync(
+        return !await dbContext.Set<TickerQStoreMetadata>().AsNoTracking().ExistsAsync(
             x => x.ApplicationNamespaceKey == TickerQRuntimePartition.LegacyGlobal.StorageKey &&
                  x.Id == TickerQStoreMetadata.LegacyRuntimeAdoptionId,
             cancellationToken).ConfigureAwait(false);
@@ -377,7 +381,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         TDbContext dbContext, CancellationToken cancellationToken)
     {
         var metadata = dbContext.Set<TickerQStoreMetadata>();
-        if (!await metadata.AsNoTracking().AnyAsync(
+        if (!await metadata.AsNoTracking().ExistsAsync(
                 x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                      x.Id == TickerQStoreMetadata.TimeTickerGraphMutationSentinelId,
                 cancellationToken).ConfigureAwait(false))
@@ -474,7 +478,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         // A configured scheduler is fail-closed until its immutable construction-bound epoch has
         // been activated. Unbound providers and queue-only producers retain rolling-upgrade
         // compatibility with absent/Pending metadata.
-        if (!await metadata.AsNoTracking().AnyAsync(
+        if (!await metadata.AsNoTracking().ExistsAsync(
                 x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == scopeKey, cancellationToken)
                 .ConfigureAwait(false))
         {
@@ -598,10 +602,19 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
 
     public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
         ReconciliationActivationScope scope, long targetEpoch, CancellationToken cancellationToken = default)
+        => BeginReconciliationActivationEpochAsync(scope, targetEpoch, null, cancellationToken);
+
+    public bool SupportsActivationManifest => true;
+
+    public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
+        ReconciliationActivationScope scope, long targetEpoch, string manifest,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(scope);
         if (targetEpoch <= 0) throw new ArgumentOutOfRangeException(nameof(targetEpoch));
-        return MutateActivationStateAsync(scope.ScopeKey, targetEpoch, null, ActivationMutation.Begin, cancellationToken);
+        ActivationManifests.Validate(manifest);
+        return MutateActivationStateAsync(scope.ScopeKey, targetEpoch, null, ActivationMutation.Begin,
+            cancellationToken, manifest);
     }
 
     public Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(
@@ -641,7 +654,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
 
     private async Task<ActivationEpochState> MutateActivationStateAsync(
         string scopeKey, long targetEpoch, string checkpoint, ActivationMutation mutation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, string manifest = null)
     {
         const int maxAttempts = 16;
         for (var attempt = 0; attempt < maxAttempts; attempt++)
@@ -673,6 +686,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                         Id = scopeKey,
                         ActivationEpoch = targetEpoch,
                         ActivationPhase = ActivationEpochPhase.Activating,
+                        ActivationManifest = manifest,
                         Version = 1,
                         UpdatedAtUtc = _clock.UtcNow
                     };
@@ -686,18 +700,21 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 long nextEpoch = metadata.ActivationEpoch;
                 var nextPhase = metadata.ActivationPhase;
                 string nextCheckpoint = metadata.ActivationCheckpoint;
+                var nextManifest = metadata.ActivationManifest;
+                var nextManifestHistory = metadata.ActivationManifestHistory;
                 switch (mutation)
                 {
-                    case ActivationMutation.Begin when targetEpoch > metadata.ActivationEpoch:
+                    case ActivationMutation.Begin when targetEpoch > metadata.ActivationEpoch ||
+                                                       (targetEpoch == metadata.ActivationEpoch &&
+                                                        metadata.ActivationPhase == ActivationEpochPhase.Pending):
                         shouldUpdate = true;
                         nextEpoch = targetEpoch;
                         nextPhase = ActivationEpochPhase.Activating;
-                        nextCheckpoint = null;
-                        break;
-                    case ActivationMutation.Begin when targetEpoch == metadata.ActivationEpoch &&
-                                                       metadata.ActivationPhase == ActivationEpochPhase.Pending:
-                        shouldUpdate = true;
-                        nextPhase = ActivationEpochPhase.Activating;
+                        if (targetEpoch > metadata.ActivationEpoch) nextCheckpoint = null;
+                        nextManifest = manifest;
+                        nextManifestHistory = ActivationManifests.JoinHistory(ActivationManifests.Advance(
+                            metadata.ActivationManifest,
+                            ActivationManifests.SplitHistory(metadata.ActivationManifestHistory), manifest));
                         break;
                     case ActivationMutation.Checkpoint when targetEpoch == metadata.ActivationEpoch &&
                                                             metadata.ActivationPhase == ActivationEpochPhase.Activating &&
@@ -725,6 +742,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                         .SetProperty(x => x.ActivationEpoch, nextEpoch)
                         .SetProperty(x => x.ActivationPhase, nextPhase)
                         .SetProperty(x => x.ActivationCheckpoint, nextCheckpoint)
+                        .SetProperty(x => x.ActivationManifest, nextManifest)
+                        .SetProperty(x => x.ActivationManifestHistory, nextManifestHistory)
                         .SetProperty(x => x.Version, metadata.Version + 1)
                         .SetProperty(x => x.UpdatedAtUtc, _clock.UtcNow), cancellationToken)
                     .ConfigureAwait(false);
@@ -737,12 +756,17 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 metadata.ActivationEpoch = nextEpoch;
                 metadata.ActivationPhase = nextPhase;
                 metadata.ActivationCheckpoint = nextCheckpoint;
+                metadata.ActivationManifest = nextManifest;
+                metadata.ActivationManifestHistory = nextManifestHistory;
                 metadata.Version++;
                 await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
                 return ToActivationState(metadata);
             }
             catch (DbUpdateConcurrencyException) when (attempt + 1 < maxAttempts) { }
             catch (DbUpdateException) when (attempt + 1 < maxAttempts) { }
+            // Replicas starting together race for the first activation row; PostgreSQL reports the loser
+            // as a serialization failure wrapped by the provider's execution strategy.
+            catch (Exception ex) when (attempt + 1 < maxAttempts && RelationalTransactionConflicts.IsConflictInChain(ex)) { }
 
             await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(50, attempt + 1)), cancellationToken)
                 .ConfigureAwait(false);
@@ -773,7 +797,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             {
                 Epoch = metadata.ActivationEpoch,
                 Phase = metadata.ActivationPhase,
-                Checkpoint = metadata.ActivationCheckpoint
+                Checkpoint = metadata.ActivationCheckpoint,
+                Manifest = metadata.ActivationManifest,
+                ManifestHistory = ActivationManifests.SplitHistory(metadata.ActivationManifestHistory)
             };
 
     private enum ActivationMutation { Begin, Checkpoint, Commit }
@@ -847,9 +873,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         ValidateEnvelope(functionContext.ResultEnvelope);
         var successful = functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
         var terminalMutationDigest = ComputeTerminalMutationDigest(functionContext);
-        using var strategySession = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-        var strategy = strategySession.Context.Database.CreateExecutionStrategy();
-        return await strategy.ExecuteAsync(async ct =>
+        // Replay serialization conflicts (frequent on Oracle) instead of leaving a finished run for stale
+        // recovery. Every attempt opens a fresh context and transaction.
+        return await ExecuteMutationTransactionWithRetriesAsync(async (markCommitStarted, ct) =>
         {
             using var operationSession = await CreateDbContextAsync(ct).ConfigureAwait(false);
             var dbContext = operationSession.Context;
@@ -865,6 +891,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 if (!ImmutableIntentMatches(existing, intent, terminalMutationDigest))
                     throw new InvalidOperationException(
                         "Durable Node finalization outbox integrity violation: an existing outbox ID has different immutable content.");
+                markCommitStarted();
                 await transaction.CommitAsync(ct).ConfigureAwait(false);
                 return true;
             }
@@ -920,6 +947,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
 
             dbContext.Set<NodeFinalizationOutboxEntity>().Add(ToEntity(intent, terminalMutationDigest));
             await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
+            markCommitStarted();
             await transaction.CommitAsync(ct).ConfigureAwait(false);
             return true;
         }, cancellationToken).ConfigureAwait(false);
@@ -1032,10 +1060,10 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         ValidateTerminalCommit(functionContext);
         var successful = functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
         ValidateEnvelope(functionContext.ResultEnvelope);
-        using var strategySession = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-        var strategy = strategySession.Context.Database.CreateExecutionStrategy();
-        return await strategy.ExecuteAsync(
-            async ct =>
+        // Replay serialization conflicts (frequent on Oracle) instead of leaving a finished run for stale
+        // recovery. Every attempt opens a fresh context and transaction.
+        return await ExecuteMutationTransactionWithRetriesAsync(
+            async (markCommitStarted, ct) =>
             {
                 // A retry must start with a fresh context so a rolled-back tracked result entity from the
                 // prior attempt cannot leak into or collide with the next serializable transaction.
@@ -1099,6 +1127,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                         dbContext, functionContext, ct).ConfigureAwait(false);
                     await ReplaceResultAsync(dbContext, functionContext, ct).ConfigureAwait(false);
                 }
+                markCommitStarted();
                 await transaction.CommitAsync(ct).ConfigureAwait(false);
                 return true;
             }, cancellationToken).ConfigureAwait(false);
@@ -1893,7 +1922,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         var hasDeeper = await context.AsNoTracking()
             .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ExecutionTime == null && x.ParentId.HasValue)
             .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(leafIds, x => x.ParentId.Value))
-            .AnyAsync(cancellationToken)
+            .ExistsAsync(cancellationToken)
             .ConfigureAwait(false);
         if (!hasDeeper)
             return;
@@ -2025,7 +2054,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         var hasDeeper = await context.AsNoTracking()
             .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ParentId.HasValue)
             .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(leafIds, x => x.ParentId.Value))
-            .AnyAsync(cancellationToken)
+            .ExistsAsync(cancellationToken)
             .ConfigureAwait(false);
         if (!hasDeeper)
             return;
@@ -2478,14 +2507,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         {
             foreach (var functionGroup in manifest.Seeds.Where(s => s.CanSeed).GroupBy(s => s.Function))
             {
-                var documentedLegacyKeys = functionGroup
-                    .SelectMany(seed => CronSeedIdentity.LegacyAdoptionKeys(
-                        manifest.ApplicationNamespace, seed.StableDefinitionId))
-                    .ToHashSet(StringComparer.Ordinal);
                 var legacy = allSeeded.Where(x => CronSeedIdentity.CanonicallyEquals(x.Function, functionGroup.Key)
                     && x.SeedOwnerNamespace == null
-                    && (x.SeedKey == null || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
-                        || documentedLegacyKeys.Contains(x.SeedKey))).ToArray();
+                    && x.SeedKey == null).ToArray();
                 if (legacy.Length == 0) continue;
                 if (!manifest.TryGetLegacyOwner(functionGroup.Key, out var explicitOwner))
                     throw new InvalidOperationException(
@@ -2542,24 +2566,15 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 continue;
 
             var seedKey = manifest.SeedKeyFor(seed);
-            var documentedLegacyKeys = manifest.IsLegacyGlobal
-                ? Array.Empty<string>()
-                : CronSeedIdentity.LegacyAdoptionKeys(
-                    manifest.ApplicationNamespace, seed.StableDefinitionId);
-            var acceptedSeedKeys = manifest.IsLegacyGlobal
-                ? Array.Empty<string>()
-                : CronSeedIdentity.AcceptedSeedKeys(
-                    manifest.ApplicationNamespace, seed.StableDefinitionId);
 
             var group = manifest.IsLegacyGlobal
                 ? (byFunction.TryGetValue(seed.Function, out var legacyGroup) ? legacyGroup : null)
                 : existing.Where(x =>
-                        (acceptedSeedKeys.Contains(x.SeedKey, StringComparer.Ordinal)
+                        (string.Equals(x.SeedKey, seedKey, StringComparison.Ordinal)
                          && CronSeedIdentity.CanonicallyEquals(x.SeedOwnerNamespace, manifest.ApplicationNamespace))
                         || (CronSeedIdentity.CanonicallyEquals(x.Function, seed.Function) && x.SeedOwnerNamespace == null
                             && manifest.MayAdoptLegacy(seed.Function)
-                            && (x.SeedKey == null || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
-                                || documentedLegacyKeys.Contains(x.SeedKey, StringComparer.Ordinal))))
+                            && x.SeedKey == null))
                     .OrderBy(x => x.Id).ToList();
             if (group is { Count: > 0 })
             {
@@ -2587,42 +2602,11 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                     changed = true;
                 }
 
-                if (!string.Equals(cron.Expression, seed.Expression, StringComparison.Ordinal))
-                {
-                    cron.Expression = seed.Expression;
-                    changed = true;
-                    definitionChanged = true;
-                }
-
-                // Reconcile the authoritative contract identity onto seeded rows only.
-                if (!string.IsNullOrEmpty(cron.InitIdentifier)
-                    && !seed.MatchesIdentity(cron.RequestContractVersion, cron.RequestContractFingerprint))
-                {
-                    cron.RequestContractVersion = seed.RequestContractVersion;
-                    cron.RequestContractFingerprint = seed.RequestContractFingerprint;
-                    changed = true;
-                    definitionChanged = true;
-                }
-
-                if (cron.Retries != seed.Retries)
-                {
-                    cron.Retries = seed.Retries;
-                    changed = true;
-                    definitionChanged = true;
-                }
-                if (!(cron.RetryIntervals ?? Array.Empty<int>()).SequenceEqual(
-                        seed.RetryIntervals ?? Array.Empty<int>()))
-                {
-                    cron.RetryIntervals = seed.RetryIntervals;
-                    changed = true;
-                    definitionChanged = true;
-                }
-                if (cron.TimeoutSeconds != seed.TimeoutSeconds)
-                {
-                    cron.TimeoutSeconds = seed.TimeoutSeconds;
-                    changed = true;
-                    definitionChanged = true;
-                }
+                // Expression, contract identity (seeded rows only), retries, timeout, and the full
+                // SeedCronTickers definition: time zone, policy, request, chain, late start, catch-up, overlap.
+                var seedChange = DefinedCronSeedApplier.Apply(cron, seed, !string.IsNullOrEmpty(cron.InitIdentifier));
+                changed |= seedChange.Changed;
+                definitionChanged |= seedChange.DefinitionChanged;
 
                 if (definitionChanged)
                 {
@@ -2671,13 +2655,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                     InitIdentifier = $"MemoryTicker_Seeded_{seed.Function}",
                     CreatedAt = now,
                     UpdatedAt = now,
-                    Request = Array.Empty<byte>(),
-                    RequestContractVersion = seed.RequestContractVersion,
-                    RequestContractFingerprint = seed.RequestContractFingerprint,
-                    Retries = seed.Retries,
-                    RetryIntervals = seed.RetryIntervals,
-                    TimeoutSeconds = seed.TimeoutSeconds
                 };
+                DefinedCronSeedApplier.Initialize(entity, seed);
                 await cronSet.AddAsync(entity, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -2804,7 +2783,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             // Avoid compiling provider-specific navigation updates when this partition has no
             // occurrences. Some EF providers cannot translate the empty-work update shape.
             if (!await context.AsNoTracking()
-                    .AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey, ct)
+                    .ExistsAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey, ct)
                     .ConfigureAwait(false))
                 return result;
 
@@ -2963,7 +2942,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         if (item.NextCronOccurrence is null)
         {
             var isCurrentDefinition = await dbContext.Set<TCronTicker>().AsNoTracking()
-                .AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                .ExistsAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                                x.Id == item.Id && x.DefinitionRevision == item.DefinitionRevision,
                     cancellationToken).ConfigureAwait(false);
             if (!isCurrentDefinition) return null;
@@ -3262,7 +3241,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         {
             if (!lease.AcquisitionToken.HasValue)
                 continue;
-            if (await dbContext.Set<TTimeTicker>().AsNoTracking().AnyAsync(
+            if (await dbContext.Set<TTimeTicker>().AsNoTracking().ExistsAsync(
                     x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                          x.Id == lease.TickerId && x.LockHolder == _lockHolder &&
                          x.Status == TickerStatus.InProgress && x.AcquisitionToken == lease.AcquisitionToken,
@@ -3274,7 +3253,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         {
             if (!lease.AcquisitionToken.HasValue)
                 continue;
-            if (await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>().AsNoTracking().AnyAsync(
+            if (await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>().AsNoTracking().ExistsAsync(
                     x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                          x.Id == lease.TickerId && x.LockHolder == _lockHolder &&
                          x.Status == TickerStatus.InProgress && x.AcquisitionToken == lease.AcquisitionToken,
@@ -3344,7 +3323,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
 
         var hasCronOccurrences = await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
             .AsNoTracking()
-            .AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey, cancellationToken)
+            .ExistsAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey, cancellationToken)
             .ConfigureAwait(false);
         if (hasCronOccurrences)
         {

@@ -1,21 +1,22 @@
 import { useState, type FormEvent } from "react";
 import { Navigate, useLocation } from "react-router-dom";
-import { ExternalLink, LogIn, Lock, User } from "lucide-react";
+import { ExternalLink, KeyRound, LogIn, Lock, RotateCw, User } from "lucide-react";
 import tickerqLogo from "@/assets/tickerq-logo.svg";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth/auth-context";
 import { AuthApiError } from "@/lib/auth/auth-api";
-import { formatApplicationNamespace, getRuntimeConfig } from "@/lib/runtime-config";
+import { formatApplicationNamespace, getRuntimeConfig, resolveDashboardUrl } from "@/lib/runtime-config";
 
 interface LocationState {
   from?: string;
 }
 
 /**
- * Standalone login screen. Rendered when AuthContext.status === "anonymous"
- * AND login is available (JWT or Cookie scheme). After successful login the
- * user lands on the route they were trying to reach (or "/").
+ * Standalone login screen. With the dashboard's own JWT or cookie login it shows the sign-in form, and
+ * after signing in the user lands on the route they were trying to reach (or "/"). Other modes cannot
+ * sign anyone in here: host authentication sends the user to the application's sign-in, and Basic,
+ * API-key, or custom modes expect credentials with every request, so the screen explains that instead.
  */
 export default function LoginPage() {
   const auth = useAuth();
@@ -32,6 +33,9 @@ export default function LoginPage() {
     const target = (location.state as LocationState | null)?.from ?? "/";
     return <Navigate to={target} replace />;
   }
+
+  const signInElsewhere = auth.info != null && !auth.info.loginAvailable;
+  const hostSignIn = auth.info?.mode === "host";
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -62,6 +66,40 @@ export default function LoginPage() {
           <span className="font-semibold text-lg">TickerQ</span>
           <span className="text-muted-foreground text-sm">Scheduler Dashboard</span>
         </div>
+        {signInElsewhere ? (
+          <div className="rounded-lg border border-border bg-surface-1 p-6 space-y-4 shadow-lg">
+            <div>
+              <h1 className="flex items-center gap-2 text-lg font-semibold">
+                <KeyRound className="h-4 w-4 text-primary" />
+                {hostSignIn ? "Sign in through the application" : "Credentials required"}
+              </h1>
+              <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
+                {hostSignIn
+                  ? "This dashboard uses the sign-in of the application that hosts it. Sign in there and you will come back here."
+                  : "This dashboard has no sign-in form. It accepts credentials sent with each request, such as HTTP Basic or an API key. Ask the person who runs this application for access."}
+              </p>
+            </div>
+            {hostSignIn && (
+              <Button
+                type="button"
+                className="w-full"
+                onClick={() => window.location.assign(resolveDashboardUrl("/auth/challenge"))}
+              >
+                <LogIn className="h-3.5 w-3.5 mr-1.5" />
+                Sign in
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              onClick={() => window.location.reload()}
+            >
+              <RotateCw className="h-3.5 w-3.5 mr-1.5" />
+              Try again
+            </Button>
+          </div>
+        ) : (
         <form
           onSubmit={onSubmit}
           className="rounded-lg border border-border bg-surface-1 p-6 space-y-4 shadow-lg"
@@ -126,6 +164,7 @@ export default function LoginPage() {
             {submitting ? "Signing in…" : "Sign in"}
           </Button>
         </form>
+        )}
 
         <footer className="mt-5" aria-label="Dashboard environment">
           <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-surface-1/40 px-3.5 py-2.5 text-left">

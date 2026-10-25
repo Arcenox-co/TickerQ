@@ -69,6 +69,19 @@ internal static class RelationalTransactionConflicts
     }
 
     /// <summary>
+    /// True when <paramref name="exception"/> or an inner exception is a lock or serialization conflict
+    /// (see <see cref="IsConflict"/>). Execution strategies wrap transient failures in an
+    /// <see cref="InvalidOperationException"/>, so callers must look through the whole chain.
+    /// </summary>
+    internal static bool IsConflictInChain(Exception exception)
+    {
+        for (var current = exception; current != null; current = current.InnerException)
+            if (current is DbException db && IsConflict(db, out _))
+                return true;
+        return false;
+    }
+
+    /// <summary>
     /// True when <paramref name="exception"/> or an inner exception is a unique or primary-key
     /// violation. Insert-if-missing statements are race-safe on providers with native conflict
     /// clauses, but MERGE-based providers (Oracle) can still report the race this way.

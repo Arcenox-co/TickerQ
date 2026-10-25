@@ -60,7 +60,9 @@ internal static class RelationalInsertIfMissing
     {
         "Npgsql.EntityFrameworkCore.PostgreSQL" => Dialect.PostgreSql,
         "Microsoft.EntityFrameworkCore.Sqlite" => Dialect.Sqlite,
-        "MySql.Data.EntityFrameworkCore" or "MySql.EntityFrameworkCore" or "Pomelo.EntityFrameworkCore.MySql" => Dialect.MySql,
+        // Microting.EntityFrameworkCore.MySql is the Pomelo fork that targets EF Core 10; it emits the same SQL.
+        "MySql.Data.EntityFrameworkCore" or "MySql.EntityFrameworkCore" or "Pomelo.EntityFrameworkCore.MySql"
+            or "Microting.EntityFrameworkCore.MySql" => Dialect.MySql,
         "Microsoft.EntityFrameworkCore.SqlServer" => Dialect.SqlServer,
         "Oracle.EntityFrameworkCore" => Dialect.Oracle,
         _ => throw new NotSupportedException(

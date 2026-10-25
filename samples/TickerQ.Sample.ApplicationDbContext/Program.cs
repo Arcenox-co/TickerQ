@@ -18,10 +18,9 @@ builder.Services.AddDbContext<AppDbContext>(dbOptions =>
 // TickerQ setup with SQLite operational store (file-based)
 builder.Services.AddTickerQ(options =>
 {
-    // Physical runtime partition + exact epoch. The generated host-owned
+    // Physical runtime partition. The generated host-owned
     // ApplicationRuntimePartitioning migration creates the corresponding EF ownership shape.
     options.UseApplicationNamespace("application-db-context-sample");
-    options.UseReconciliationEpoch(1);
     // Existing verified single-owner stores only, for one reviewed rollout:
     // options.UseLegacyRuntimePartitionAdoption("application-db-context-sample", 1);
     options.AddOperationalStore(efOptions =>
@@ -32,11 +31,17 @@ builder.Services.AddTickerQ(options =>
 
 var app = builder.Build();
 
-// Apply the host-owned migration history, including ApplicationRuntimePartitioning.
+// Apply the host-owned migration history.
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    // SQLite rebuilds tables to change their primary keys, which requires foreign keys to be off.
+    // The pragma only takes effect outside a transaction, so set it on the open connection first.
+    db.Database.OpenConnection();
+    db.Database.ExecuteSqlRaw("PRAGMA foreign_keys = OFF;");
     db.Database.Migrate();
+    db.Database.ExecuteSqlRaw("PRAGMA foreign_keys = ON;");
+    db.Database.CloseConnection();
 }
 
 // Activate TickerQ job processor (mirrors docs' minimal setup)

@@ -59,7 +59,7 @@ public sealed class RelationalConformanceTests
     public async Task Activation_metadata_round_trips_the_full_runtime_key(RelationalConformanceTarget target)
     {
         await using var database = await ConformanceDatabase.CreateAsync(target);
-        await StoreMetadataActivationContract.VerifyAsync(database.Options(), upgradeLegacySchema: false);
+        await StoreMetadataActivationContract.VerifyAsync(database.Options());
     }
 
     [RelationalConformanceTheory]
@@ -263,7 +263,8 @@ public sealed class RelationalConformanceTests
         var column = sql.DelimitIdentifier("SeedKey");
         yield return target switch
         {
-            RelationalConformanceTarget.MySql or RelationalConformanceTarget.MariaDb => $"DROP INDEX {index} ON {table}",
+            RelationalConformanceTarget.MySql or RelationalConformanceTarget.MariaDb
+                or RelationalConformanceTarget.MariaDbMicroting => $"DROP INDEX {index} ON {table}",
             RelationalConformanceTarget.SqlServer => $"DROP INDEX {index} ON {table}",
             RelationalConformanceTarget.CockroachDb => $"DROP INDEX {qualifiedIndex} CASCADE",
             _ => $"DROP INDEX {qualifiedIndex}",

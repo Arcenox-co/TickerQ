@@ -1,4 +1,5 @@
 import { ExecutionStatus } from "@/components/cron/ExecutionStatus";
+import { SeededCronBadge } from "@/components/cron/SeededCronBadge";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -200,6 +201,7 @@ export default function CronTickersPage() {
             <span className="font-mono text-[11px] font-medium text-foreground">
               {row.original.functionName}
             </span>
+            {row.original.isSeeded ? <SeededCronBadge /> : null}
           </div>
         ),
       },
