@@ -873,9 +873,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         ValidateEnvelope(functionContext.ResultEnvelope);
         var successful = functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
         var terminalMutationDigest = ComputeTerminalMutationDigest(functionContext);
-        using var strategySession = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-        var strategy = strategySession.Context.Database.CreateExecutionStrategy();
-        return await strategy.ExecuteAsync(async ct =>
+        // Replay serialization conflicts (frequent on Oracle) instead of leaving a finished run for stale
+        // recovery. Every attempt opens a fresh context and transaction.
+        return await ExecuteMutationTransactionWithRetriesAsync(async (markCommitStarted, ct) =>
         {
             using var operationSession = await CreateDbContextAsync(ct).ConfigureAwait(false);
             var dbContext = operationSession.Context;
@@ -891,6 +891,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 if (!ImmutableIntentMatches(existing, intent, terminalMutationDigest))
                     throw new InvalidOperationException(
                         "Durable Node finalization outbox integrity violation: an existing outbox ID has different immutable content.");
+                markCommitStarted();
                 await transaction.CommitAsync(ct).ConfigureAwait(false);
                 return true;
             }
@@ -946,6 +947,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
 
             dbContext.Set<NodeFinalizationOutboxEntity>().Add(ToEntity(intent, terminalMutationDigest));
             await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
+            markCommitStarted();
             await transaction.CommitAsync(ct).ConfigureAwait(false);
             return true;
         }, cancellationToken).ConfigureAwait(false);
@@ -1058,10 +1060,10 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         ValidateTerminalCommit(functionContext);
         var successful = functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
         ValidateEnvelope(functionContext.ResultEnvelope);
-        using var strategySession = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-        var strategy = strategySession.Context.Database.CreateExecutionStrategy();
-        return await strategy.ExecuteAsync(
-            async ct =>
+        // Replay serialization conflicts (frequent on Oracle) instead of leaving a finished run for stale
+        // recovery. Every attempt opens a fresh context and transaction.
+        return await ExecuteMutationTransactionWithRetriesAsync(
+            async (markCommitStarted, ct) =>
             {
                 // A retry must start with a fresh context so a rolled-back tracked result entity from the
                 // prior attempt cannot leak into or collide with the next serializable transaction.
@@ -1125,6 +1127,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                         dbContext, functionContext, ct).ConfigureAwait(false);
                     await ReplaceResultAsync(dbContext, functionContext, ct).ConfigureAwait(false);
                 }
+                markCommitStarted();
                 await transaction.CommitAsync(ct).ConfigureAwait(false);
                 return true;
             }, cancellationToken).ConfigureAwait(false);
