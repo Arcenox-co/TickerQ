@@ -347,7 +347,7 @@ public sealed class EfCoreParentResultPersistenceTests : IAsyncLifetime
         {
             TickerId = id, Type = TickerType.TimeTicker, ParentId = parentId, AcquisitionToken = token
         }.SetProperty(x => x.Status, TickerStatus.Done)
-         .SetProperty(x => x.ExecutedAt, DateTime.UtcNow)
+         .SetProperty(x => x.ExecutedAt, ClientValues.UtcNow)
          .SetProperty(x => x.ReleaseLock, true)
          .SetProperty(x => x.ResultEnvelope, result);
 

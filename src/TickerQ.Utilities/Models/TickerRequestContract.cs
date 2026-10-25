@@ -209,7 +209,7 @@ namespace TickerQ.Utilities.Models
         {
             if (!a.HasValue) return !b.HasValue;
             if (!b.HasValue) return false;
-            return JsonElement.DeepEquals(a.Value, b.Value);
+            return Compat.JsonElementCompat.DeepEquals(a.Value, b.Value);
         }
 
         public override int GetHashCode()

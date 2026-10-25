@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using TickerQ.EntityFrameworkCore.Compat;
 using TickerQ.EntityFrameworkCore.DbContextFactory;
 using TickerQ.EntityFrameworkCore.Infrastructure;
 using TickerQ.Utilities.Entities;
@@ -23,11 +24,10 @@ public static class ServiceBuilder
         {
             if (configurationType == ConfigurationType.UseModelCustomizer)
             {
-                services.TryAddEnumerable(ServiceDescriptor.Singleton<IDbContextOptionsConfiguration<TContext>, TickerQOptionsConfiguration<TContext, TTimeTicker, TCronTicker>>());
+                DbContextOptionsConfigurationCompat.Add<TContext, TickerQOptionsConfiguration<TContext, TTimeTicker, TCronTicker>>(services);
             }
 
-            services.TryAddEnumerable(ServiceDescriptor.Singleton<IDbContextOptionsConfiguration<TContext>,
-                ProviderCompatibilityOptionsConfiguration<TContext>>());
+            DbContextOptionsConfigurationCompat.Add<TContext, ProviderCompatibilityOptionsConfiguration<TContext>>(services);
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerEfCorePersistenceProvider<TContext, TTimeTicker, TCronTicker>>();
             RegisterTransactionalScheduling<TContext, TTimeTicker, TCronTicker>(services);
             RegisterAssistantHistory<TContext, TTimeTicker, TCronTicker>(builder, services);
@@ -60,8 +60,7 @@ public static class ServiceBuilder
         services.TryAddSingleton(sp => new EfStagingRootProvider(sp));
         services.AddLogging();
         services.AddSingleton<EfTransactionalScheduling<TContext, TTimeTicker, TCronTicker>>();
-        services.TryAddEnumerable(ServiceDescriptor.Singleton<IDbContextOptionsConfiguration<TContext>,
-            StagingOptionsConfiguration<TContext, TTimeTicker, TCronTicker>>());
+        DbContextOptionsConfigurationCompat.Add<TContext, StagingOptionsConfiguration<TContext, TTimeTicker, TCronTicker>>(services);
         services.AddTransient<ITimeTickerManager<TTimeTicker>>(sp =>
             new EfStagingTimeTickerManager<TTimeTicker>(
                 sp.GetRequiredService<EfOriginalTimeTickerManager<TTimeTicker>>().Manager,

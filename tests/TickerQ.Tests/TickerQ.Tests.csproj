@@ -16,6 +16,8 @@
         <PackageReference Include="NSubstitute" Version="5.3.0" />
         <PackageReference Include="xunit" Version="2.9.3" />
         <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="$(DotNetVersion)" />
+           <!-- System.Linq.AsyncEnumerable is part of .NET 10; earlier lines get it from its package. -->
+           <PackageReference Include="System.Linq.AsyncEnumerable" Version="10.0.13" Condition="'$(TickerQDotNetMajor)' &lt; '10'" />
         <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
     </ItemGroup>
 

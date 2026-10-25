@@ -9,8 +9,8 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../TickerQ.Utilities/TickerQ.Utilities.csproj" />
-    <PackageReference Include="Microsoft.Extensions.Http" Version="[10.0.13,11.0.0)" />
-    <PackageReference Include="Microsoft.AspNetCore.DataProtection" Version="[10.0.13,11.0.0)" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="$(DotNetVersion)" />
+    <PackageReference Include="Microsoft.AspNetCore.DataProtection" Version="$(TickerQPatchedVersion)" />
     <None Include="README.md" Pack="true" PackagePath="" />
     <InternalsVisibleTo Include="TickerQ.Integrations.Tests" />
   </ItemGroup>

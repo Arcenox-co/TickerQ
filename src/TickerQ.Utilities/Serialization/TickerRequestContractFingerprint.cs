@@ -63,7 +63,7 @@ namespace TickerQ.Utilities.Serialization
 
             Span<byte> hash = stackalloc byte[SHA256.HashSizeInBytes];
             SHA256.HashData(preimage, hash);
-            return string.Concat(Prefix, Convert.ToHexStringLower(hash));
+            return string.Concat(Prefix, Compat.HexCompat.ToHexStringLower(hash));
         }
 
         /// <summary>

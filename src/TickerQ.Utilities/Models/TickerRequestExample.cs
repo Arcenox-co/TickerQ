@@ -59,7 +59,7 @@ namespace TickerQ.Utilities.Models
             return string.Equals(Key, other.Key, StringComparison.Ordinal)
                    && string.Equals(Summary, other.Summary, StringComparison.Ordinal)
                    // Genuinely structural: property order / formatting is ignored (pre-canonical).
-                   && JsonElement.DeepEquals(Value, other.Value);
+                   && Compat.JsonElementCompat.DeepEquals(Value, other.Value);
         }
 
         public override bool Equals(object obj) => Equals(obj as TickerRequestExample);

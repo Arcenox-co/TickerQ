@@ -225,6 +225,11 @@ jobs:
               rm -f "$registry_package"
               cp "$local_package" "$registry_package"
               cp "$local_package" "missing-nupkgs/"
+              # dotnet nuget push publishes a .snupkg found next to its .nupkg to the symbol server.
+              local_symbols="nupkgs/${package_id}.${NUGET_VERSION}.snupkg"
+              if [ -f "$local_symbols" ]; then
+                cp "$local_symbols" "missing-nupkgs/"
+              fi
             else
               echo "NuGet returned HTTP $status while checking $package_id@$NUGET_VERSION" >&2
               exit 1
@@ -233,6 +238,7 @@ jobs:
 
           python3 scripts/validate-package-licenses.py \
             --directory ./registry-nupkgs \
+            --no-symbol-packages \
             --version "$NUGET_VERSION" \
             --commercial-license release-source/LICENSE.md \
             --third-party-notices release-source/THIRD-PARTY-NOTICES.md \
@@ -301,6 +307,7 @@ jobs:
             echo "All NuGet packages already exist and match the producer artifacts."
             exit 0
           fi
+          # Each push also uploads the package's .snupkg staged beside it, if any.
           for package in "${packages[@]}"; do
             dotnet nuget push "$package" \
               --source https://api.nuget.org/v3/index.json \

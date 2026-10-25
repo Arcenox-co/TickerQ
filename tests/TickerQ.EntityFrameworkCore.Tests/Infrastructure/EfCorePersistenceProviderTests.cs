@@ -526,7 +526,7 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
             await ctx.Set<TimeTickerEntity>().Where(x => x.Id == root.Id)
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(x => x.Status, TickerStatus.InProgress)
-                    .SetProperty(x => x.AcquisitionToken, Guid.NewGuid())
+                    .SetProperty(x => x.AcquisitionToken, ClientValues.NewGuid())
                     .SetProperty(x => x.LeaseUntil, _fixedNow.AddMinutes(5)));
         Assert.Equal(0, await _provider.ReplaceTimeTickerChainAsync(
             root.Id, CreateTimeTicker(function: "ActiveReplacement"), CancellationToken.None));
@@ -886,7 +886,7 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
             await db.Set<TimeTickerEntity>().Where(x => x.Id == root.Id)
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(x => x.Status, TickerStatus.InProgress)
-                    .SetProperty(x => x.AcquisitionToken, Guid.NewGuid())
+                    .SetProperty(x => x.AcquisitionToken, ClientValues.NewGuid())
                     .SetProperty(x => x.LeaseUntil, _fixedNow.AddMinutes(5))
                     .SetProperty(x => x.UpdatedAt, _fixedNow.AddSeconds(1)), ct);
         };

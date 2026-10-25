@@ -135,6 +135,7 @@ public class ProviderCompatibilityTests
             RelationalIndexProvider.Oracle, requirement, installed, out var mismatch), mismatch);
     }
 
+#if TICKERQ_TEST_ORACLE
     [Fact]
     public void Oracle_model_scopes_the_seed_key_index_with_a_virtual_column()
     {
@@ -179,7 +180,24 @@ public class ProviderCompatibilityTests
         Assert.Equal("BOOLEAN", model.FindEntityType(typeof(HostEntity))!
             .FindProperty(nameof(HostEntity.Flag))!.GetColumnType());
     }
+#endif
 
+#if !NET10_0_OR_GREATER || NET11_0_OR_GREATER
+    [Fact]
+    public void MySql_provider_outside_10x_reads_retry_intervals_through_a_json_converter()
+    {
+        // MySql.EntityFrameworkCore reads primitive collections back only in 10.x (see PrimitiveCollectionCompat).
+        var model = DesignModel(b => b.UseMySQL("Server=localhost;Database=tickerq;User=u;Password=p"));
+        var retryIntervals = model.FindEntityType(typeof(TimeTickerEntity))!.FindProperty(nameof(TimeTickerEntity.RetryIntervals))!;
+
+        var converter = retryIntervals.GetValueConverter();
+        Assert.NotNull(converter);
+        Assert.Equal("[5,30,60]", converter!.ConvertToProvider(new[] { 5, 30, 60 }));
+        Assert.Equal(new[] { 5, 30, 60 }, (int[])converter.ConvertFromProvider("[5,30,60]")!);
+        Assert.Null(model.FindEntityType(typeof(TickerQ.Utilities.Models.CronChainNode)));
+    }
+
+#endif
     [Fact]
     public void MySql_model_keeps_investigation_index_keys_within_the_innodb_limit()
     {
@@ -226,6 +244,7 @@ public class ProviderCompatibilityTests
             "The sample's model snapshot is out of date. Regenerate it with dotnet ef migrations add.");
     }
 
+#if TICKERQ_TEST_ORACLE
     private sealed class HostEntity
     {
         public int Id { get; set; }
@@ -244,6 +263,7 @@ public class ProviderCompatibilityTests
             TickerQ.EntityFrameworkCore.Configurations.TickerProviderModelConventions.Apply(modelBuilder, Database.ProviderName);
         }
     }
+#endif
 
     private static IModel DesignModel(Action<DbContextOptionsBuilder<TickerQDbContext>> configure)
     {

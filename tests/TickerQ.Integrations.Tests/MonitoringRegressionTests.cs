@@ -222,7 +222,7 @@ public partial class MonitoringTests
         var config = Config();
         var executions = new[] { Completed(TickerStatus.Failed, 10), Completed(TickerStatus.Failed, 10),
             Completed(TickerStatus.Failed, 10), Completed(TickerStatus.Done, 10) };
-        foreach (var rows in new[] { executions, executions.Reverse().ToArray() })
+        foreach (var rows in new[] { executions, Enumerable.Reverse(executions).ToArray() })
         {
             var state = new MonitoringState(); Apply(state, config, new(Now, null, [], []));
             Apply(state, config, new(Now.AddSeconds(30), Now.AddSeconds(10), rows, []));

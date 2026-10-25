@@ -211,7 +211,10 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nupkgs
-          path: ./nupkgs/*.nupkg
+          # Library packages ship with a .snupkg symbol package (see src/Directory.Build.props).
+          path: |
+            ./nupkgs/*.nupkg
+            ./nupkgs/*.snupkg
           if-no-files-found: error
 
       - name: Upload validated npm package artifact

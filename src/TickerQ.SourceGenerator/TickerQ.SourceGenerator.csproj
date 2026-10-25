@@ -9,6 +9,8 @@
         <Description>Compile-time TickerQ function registration and request-contract generation.</Description>
         <PackageTags>$(PackageTags);source-generator;roslyn;analyzer</PackageTags>
         <IncludeBuildOutput>false</IncludeBuildOutput>
+        <!-- Analyzer-only package: there is no lib PDB, and NuGet.org rejects symbol packages without symbols. -->
+        <IncludeSymbols>false</IncludeSymbols>
         <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     </PropertyGroup>
 

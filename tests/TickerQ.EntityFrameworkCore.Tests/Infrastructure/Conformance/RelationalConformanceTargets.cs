@@ -5,6 +5,13 @@ using Microsoft.EntityFrameworkCore.Metadata;
 using Npgsql;
 using TickerQ.EntityFrameworkCore.Infrastructure;
 
+#if TICKERQ_TEST_MICROTING_POMELO_NAMESPACE
+// Some Microting releases still ship Pomelo's assembly and namespace (see eng/DotNetLines.props).
+using MicrotingSchemaBehavior = Pomelo.EntityFrameworkCore.MySql.Infrastructure.MySqlSchemaBehavior;
+#elif TICKERQ_TEST_MICROTING
+using MicrotingSchemaBehavior = Microting.EntityFrameworkCore.MySql.Infrastructure.MySqlSchemaBehavior;
+#endif
+
 namespace TickerQ.EntityFrameworkCore.Tests.Infrastructure.Conformance;
 
 /// <summary>
@@ -60,8 +67,10 @@ internal static class RelationalConformanceTargets
         RelationalConformanceTarget.MySql or RelationalConformanceTarget.MariaDb
             or RelationalConformanceTarget.MariaDbMicroting => MySql.Data.MySqlClient.MySqlClientFactory.Instance,
         RelationalConformanceTarget.SqlServer => Microsoft.Data.SqlClient.SqlClientFactory.Instance,
+#if TICKERQ_TEST_ORACLE
         RelationalConformanceTarget.Oracle or RelationalConformanceTarget.OracleCompatibility19
             => Oracle.ManagedDataAccess.Client.OracleClientFactory.Instance,
+#endif
         _ => throw new ArgumentOutOfRangeException(nameof(target), target, null),
     };
 
@@ -87,14 +96,19 @@ internal static class RelationalConformanceTargets
                 builder.UseMySQL(connectionString);
                 break;
             case RelationalConformanceTarget.MariaDbMicroting:
+#if TICKERQ_TEST_MICROTING
                 // Pomelo-based providers reject EF schemas unless told how to treat them; Ignore keeps
                 // TickerQ's tables in the connection's database, as users of this provider configure it.
                 builder.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString),
-                    mysql => mysql.SchemaBehavior(Microting.EntityFrameworkCore.MySql.Infrastructure.MySqlSchemaBehavior.Ignore));
+                    mysql => mysql.SchemaBehavior(MicrotingSchemaBehavior.Ignore));
                 break;
+#else
+                throw new NotSupportedException("Microting.EntityFrameworkCore.MySql has no release for this .NET line.");
+#endif
             case RelationalConformanceTarget.SqlServer:
                 builder.UseSqlServer(connectionString);
                 break;
+#if TICKERQ_TEST_ORACLE
             case RelationalConformanceTarget.Oracle:
                 builder.UseOracle(connectionString);
                 break;
@@ -102,6 +116,11 @@ internal static class RelationalConformanceTargets
                 builder.UseOracle(connectionString, oracle =>
                     oracle.UseOracleSQLCompatibility(OracleSQLCompatibility.DatabaseVersion19));
                 break;
+#else
+            case RelationalConformanceTarget.Oracle:
+            case RelationalConformanceTarget.OracleCompatibility19:
+                throw new NotSupportedException("Oracle.EntityFrameworkCore has no release for this .NET line.");
+#endif
             default:
                 throw new ArgumentOutOfRangeException(nameof(target), target, null);
         }
@@ -264,8 +283,10 @@ internal sealed class ConformanceDatabase : IAsyncDisposable
                 case RelationalConformanceTarget.MariaDb:
                 case RelationalConformanceTarget.MariaDbMicroting:
                     MySql.Data.MySqlClient.MySqlConnection.ClearAllPools();
+#if TICKERQ_TEST_MICROTING
                     // Microting runs on MySqlConnector, which keeps its own pool.
                     MySqlConnector.MySqlConnection.ClearAllPools();
+#endif
                     await ExecuteAsync(factory, _adminConnectionString, $"DROP DATABASE IF EXISTS `{_name}`");
                     break;
                 case RelationalConformanceTarget.SqlServer:
@@ -273,11 +294,13 @@ internal sealed class ConformanceDatabase : IAsyncDisposable
                     await ExecuteAsync(factory, _adminConnectionString,
                         $"IF DB_ID('{_name}') IS NOT NULL BEGIN ALTER DATABASE [{_name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{_name}]; END");
                     break;
+#if TICKERQ_TEST_ORACLE
                 case RelationalConformanceTarget.Oracle:
                 case RelationalConformanceTarget.OracleCompatibility19:
                     Oracle.ManagedDataAccess.Client.OracleConnection.ClearAllPools();
                     await ExecuteAsync(factory, _adminConnectionString, $"DROP USER {_name} CASCADE");
                     break;
+#endif
             }
         }
         catch

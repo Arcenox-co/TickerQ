@@ -425,7 +425,7 @@ public sealed class EfReconciliationActivationEpochTests : IAsyncDisposable
             seed.Add(child);
             await seed.SaveChangesAsync();
             await seed.Set<TimeTickerEntity>().Where(x => x.Id == root.Id)
-                .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.ChainRootId, Guid.NewGuid()));
+                .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.ChainRootId, ClientValues.NewGuid()));
         }
 
         var fenceReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -729,8 +729,8 @@ public sealed class EfReconciliationActivationEpochTests : IAsyncDisposable
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(x => x.Status, TickerStatus.Queued)
                     .SetProperty(x => x.LockHolder, "dead-node")
-                    .SetProperty(x => x.LockedAt, DateTime.UtcNow)
-                    .SetProperty(x => x.AcquisitionToken, Guid.NewGuid()));
+                    .SetProperty(x => x.LockedAt, ClientValues.UtcNow)
+                    .SetProperty(x => x.AcquisitionToken, ClientValues.NewGuid()));
         }
         await _provider.BeginReconciliationActivationEpochAsync(1);
         await _provider.CommitReconciliationActivationEpochAsync(1);
@@ -954,8 +954,8 @@ public sealed class EfReconciliationActivationEpochTests : IAsyncDisposable
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(x => x.Status, TickerStatus.Queued)
                     .SetProperty(x => x.LockHolder, "dead-node")
-                    .SetProperty(x => x.LockedAt, DateTime.UtcNow)
-                    .SetProperty(x => x.AcquisitionToken, Guid.NewGuid()));
+                    .SetProperty(x => x.LockedAt, ClientValues.UtcNow)
+                    .SetProperty(x => x.AcquisitionToken, ClientValues.NewGuid()));
         }
         await _provider.BeginReconciliationActivationEpochAsync(1);
         await _provider.CommitReconciliationActivationEpochAsync(1);

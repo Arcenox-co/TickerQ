@@ -53,7 +53,10 @@ public sealed class LicenseCertificateReaderTests
             ?.Value;
 
         Assert.Equal("5.x", functionalLine);
-        Assert.StartsWith("10.5.", assembly.GetName().Version?.ToString(), StringComparison.Ordinal);
+        // The package major follows the .NET line the binary targets (8.5.x, 9.5.x, 10.5.x, ...).
+        var targetFramework = new System.Runtime.Versioning.FrameworkName(assembly
+            .GetCustomAttribute<System.Runtime.Versioning.TargetFrameworkAttribute>()!.FrameworkName);
+        Assert.StartsWith($"{targetFramework.Version.Major}.5.", assembly.GetName().Version?.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]

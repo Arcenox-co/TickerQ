@@ -25,6 +25,7 @@ public static class TickerProviderModelConventions
             ApplyOracleBooleanColumns(modelBuilder);
             ApplyOracleSeedKeyIndex(modelBuilder);
         }
+        Compat.PrimitiveCollectionCompat.Apply(modelBuilder, providerName, IsTickerQEntity);
         if (providerName?.Contains("MySql", StringComparison.OrdinalIgnoreCase) == true ||
             providerName?.Contains("Pomelo", StringComparison.OrdinalIgnoreCase) == true)
             ApplyMySqlIndexKeyLimits(modelBuilder);
