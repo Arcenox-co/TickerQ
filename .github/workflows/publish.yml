@@ -199,7 +199,6 @@ jobs:
             TickerQ.EntityFrameworkCore
             TickerQ.Instrumentation.OpenTelemetry
             TickerQ.Caching.StackExchangeRedis
-            TickerQ.SourceGenerator
             TickerQ.MongoDB
             TickerQ.Integrations
           )

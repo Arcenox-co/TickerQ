@@ -676,6 +676,29 @@ class LicensePolicyTests(unittest.TestCase):
             any("unexpected entries: TickerQ.10.5.0-beta.snupkg" in error for error in registry), registry
         )
 
+    def test_source_generator_ships_only_inside_the_tickerq_package(self) -> None:
+        generator = ET.parse(ROOT / "src" / "TickerQ.SourceGenerator" / "TickerQ.SourceGenerator.csproj").getroot()
+        self.assertEqual("false", generator.findtext(".//IsPackable"))
+        validator = load_validator()
+        self.assertNotIn("TickerQ.SourceGenerator", validator.COMMERCIAL_PACKAGE_IDS)
+
+        nuspec = """<?xml version="1.0"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata><id>{id}</id><version>10.5.0-beta</version></metadata>
+</package>
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            with zipfile.ZipFile(Path(directory) / "TickerQ.10.5.0-beta.nupkg", "w") as archive:
+                archive.writestr("TickerQ.nuspec", nuspec.format(id="TickerQ"))
+            with zipfile.ZipFile(Path(directory) / "TickerQ.SourceGenerator.10.5.0-beta.nupkg", "w") as archive:
+                archive.writestr("TickerQ.SourceGenerator.nuspec", nuspec.format(id="TickerQ.SourceGenerator"))
+            errors = validator.validate(
+                Path(directory), "10.5.0-beta", b"commercial", b"notices", b"dashboard notices"
+            )
+
+        self.assertTrue(any("TickerQ: source generator is not embedded" in error for error in errors), errors)
+        self.assertTrue(any("unexpected package ID 'TickerQ.SourceGenerator'" in error for error in errors), errors)
+
     def test_validator_rejects_unrecognized_commercial_version_family(self) -> None:
         validator = load_validator()
 

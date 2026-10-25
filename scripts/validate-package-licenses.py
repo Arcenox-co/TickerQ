@@ -17,7 +17,6 @@ COMMERCIAL_PACKAGE_IDS = {
     "TickerQ.Caching.StackExchangeRedis",
     "TickerQ.Dashboard",
     "TickerQ.Instrumentation.OpenTelemetry",
-    "TickerQ.SourceGenerator",
     "TickerQ.MongoDB",
     "TickerQ.Integrations",
 }
@@ -41,9 +40,9 @@ PACKAGE_AUTHORS = {
     "TickerQ.MongoDB": "Arcenox,Alex Brown",
 }
 EXPECTED_COPYRIGHT = "Copyright 2025-present Arcenox LLC and contributors"
-# Every library package ships a .snupkg (portable PDBs with Source Link) for the NuGet.org symbol
-# server. The source generator is analyzer-only: it has no lib PDB, so it has no symbol package.
-SYMBOL_PACKAGE_EXEMPT_IDS = {"TickerQ.SourceGenerator"}
+# Every package ships a .snupkg (portable PDBs with Source Link) for the NuGet.org symbol server.
+# The source generator is not a package of its own: TickerQ embeds it as an analyzer.
+SOURCE_GENERATOR_ANALYZER = "analyzers/dotnet/cs/tickerq.sourcegenerator.dll"
 SYMBOL_PACKAGE_OPC_ENTRIES = {"[Content_Types].xml", "_rels/.rels"}
 
 
@@ -94,7 +93,7 @@ def _validate_symbol_package(
 
     errors: list[str] = []
     package_key = package_id.casefold()
-    if package_key not in packages or package_id in SYMBOL_PACKAGE_EXEMPT_IDS:
+    if package_key not in packages:
         return [f"unexpected symbol package {path.name}: no matching library package"]
     if path.name != f"{package_id}.{version}.snupkg":
         errors.append(f"{path.name}: symbol package name must be {package_id}.{version}.snupkg")
@@ -265,10 +264,10 @@ def validate(
             else:
                 errors.append(f"unexpected package ID {package_id!r} in {path.name}")
 
-            if package_id == "TickerQ.SourceGenerator" and not any(
-                name.lower() == "analyzers/dotnet/cs/tickerq.sourcegenerator.dll" for name in names
+            if package_id == "TickerQ" and not any(
+                name.lower() == SOURCE_GENERATOR_ANALYZER for name in names
             ):
-                errors.append("TickerQ.SourceGenerator: analyzer DLL is not under analyzers/dotnet/cs")
+                errors.append("TickerQ: source generator is not embedded under analyzers/dotnet/cs")
         finally:
             archive.close()
 
@@ -291,7 +290,6 @@ def validate(
             package_id
             for package_key, package_id in EXPECTED_PACKAGE_IDS_BY_FOLD.items()
             if package_key in packages
-            and package_id not in SYMBOL_PACKAGE_EXEMPT_IDS
             and f"{package_id}.{expected_version}.snupkg".casefold() not in symbol_packages
         )
         if missing_symbols:

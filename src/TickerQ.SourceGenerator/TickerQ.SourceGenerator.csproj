@@ -4,13 +4,12 @@
         <LangVersion>8.0</LangVersion>
         <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
         <AssemblyName>TickerQ.SourceGenerator</AssemblyName>
-        <PackageId>TickerQ.SourceGenerator</PackageId>
         <Title>TickerQ Source Generator</Title>
         <Description>Compile-time TickerQ function registration and request-contract generation.</Description>
-        <PackageTags>$(PackageTags);source-generator;roslyn;analyzer</PackageTags>
         <IncludeBuildOutput>false</IncludeBuildOutput>
-        <!-- Analyzer-only package: there is no lib PDB, and NuGet.org rejects symbol packages without symbols. -->
-        <IncludeSymbols>false</IncludeSymbols>
+        <!-- Not published on its own: the TickerQ package embeds this generator under analyzers/dotnet/cs,
+             and installing a second copy next to it makes the generator run twice. -->
+        <IsPackable>false</IsPackable>
         <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     </PropertyGroup>
 
