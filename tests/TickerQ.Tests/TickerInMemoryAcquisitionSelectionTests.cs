@@ -42,7 +42,7 @@ public sealed class TickerInMemoryAcquisitionSelectionTests : IDisposable
         var expected = pending.OrderBy(row => row.ExecutionTime).ThenBy(row => row.Id)
             .Take(batchSize).Select(row => (row.Id, row.ExecutionTime)).ToArray();
         // Mix all seconds/statuses and reverse the expected tie order at insertion.
-        await provider.AddTimeTickers(later.Concat(history).Concat(pending.Reverse()).Concat(inlineOnly).ToArray());
+        await provider.AddTimeTickers(later.Concat(history).Concat(Enumerable.Reverse(pending)).Concat(inlineOnly).ToArray());
 
         var selected = await provider.GetEarliestTimeTickers();
 

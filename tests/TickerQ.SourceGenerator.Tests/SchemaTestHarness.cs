@@ -178,6 +178,15 @@ namespace Microsoft.Extensions.DependencyInjection
         }
     }
 
+    /// <summary>
+    /// Whether the runtime's trusted platform assemblies include Microsoft.Extensions.DependencyInjection.Abstractions,
+    /// as the base shared framework does from .NET 11. Tests stub its extension methods only when it does not,
+    /// because a stub next to the real assembly makes the generated calls ambiguous.
+    /// </summary>
+    public static bool PlatformProvidesDependencyInjection { get; } =
+        (((string?)AppDomain.CurrentDomain.GetData("TRUSTED_PLATFORM_ASSEMBLIES"))?.Split(Path.PathSeparator) ?? [])
+        .Any(path => Path.GetFileName(path) == "Microsoft.Extensions.DependencyInjection.Abstractions.dll");
+
     public static GenResult Run(string source)
     {
         var parseOptions = new CSharpParseOptions(LanguageVersion.Preview);

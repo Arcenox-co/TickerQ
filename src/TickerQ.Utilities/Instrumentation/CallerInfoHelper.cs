@@ -1,5 +1,6 @@
 ﻿using System.Diagnostics;
 using System.IO;
+using TickerQ.Utilities.Compat;
 
 namespace TickerQ.Utilities.Instrumentation;
 
@@ -19,24 +20,22 @@ internal static class CallerInfoHelper
 
       if (frame != null)
       {
-        var method = DiagnosticMethodInfo.Create(frame);
         var fileName = frame.GetFileName();
         var lineNumber = frame.GetFileLineNumber();
 
-        if (method != null)
+        if (StackFrameCompat.TryDescribe(frame, out var declaringTypeName, out var methodName))
         {
-          var className = method.DeclaringTypeName ?? "Unknown";
-          var methodName = method.Name;
+          var className = declaringTypeName ?? "Unknown";
 
           // Filter out compiler-generated methods
           if (methodName.Contains("<") || methodName.Contains(">"))
           {
             // Try to get the next frame for async methods
             var nextFrame = stackTrace.GetFrame(skipFrames + 1);
-            if (nextFrame != null && DiagnosticMethodInfo.Create(nextFrame) is { } nextMethod)
+            if (nextFrame != null && StackFrameCompat.TryDescribe(nextFrame, out var nextType, out var nextName))
             {
-              className = nextMethod.DeclaringTypeName ?? className;
-              methodName = nextMethod.Name;
+              className = nextType ?? className;
+              methodName = nextName;
               fileName = nextFrame.GetFileName() ?? fileName;
               lineNumber = nextFrame.GetFileLineNumber();
             }
@@ -72,19 +71,18 @@ internal static class CallerInfoHelper
       var stackTrace = new StackTrace(false);
       var frame = stackTrace.GetFrame(skipFrames);
 
-      if (frame != null && DiagnosticMethodInfo.Create(frame) is { } method)
+      if (frame != null && StackFrameCompat.TryDescribe(frame, out var declaringTypeName, out var methodName))
       {
-        var className = method.DeclaringTypeName ?? "Unknown";
-        var methodName = method.Name;
+        var className = declaringTypeName ?? "Unknown";
 
         // Filter out compiler-generated methods
         if (methodName.Contains("<") || methodName.Contains(">"))
         {
           var nextFrame = stackTrace.GetFrame(skipFrames + 1);
-          if (nextFrame != null && DiagnosticMethodInfo.Create(nextFrame) is { } nextMethod)
+          if (nextFrame != null && StackFrameCompat.TryDescribe(nextFrame, out var nextType, out var nextName))
           {
-            className = nextMethod.DeclaringTypeName ?? className;
-            methodName = nextMethod.Name;
+            className = nextType ?? className;
+            methodName = nextName;
           }
         }
 

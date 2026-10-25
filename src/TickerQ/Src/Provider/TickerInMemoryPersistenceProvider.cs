@@ -1813,7 +1813,8 @@ namespace TickerQ.Provider
             {
                 if (!visited.Add(current) || !TimeTickers.TryGetValue(current, out var ticker)) continue;
                 aggregate.Add(ticker);
-                foreach (var childId in GetChildrenIds(current).Reverse()) pending.Push(childId);
+                // Enumerable.Reverse explicitly: on .NET 8/9, C# 14 binds array.Reverse() to the in-place span overload.
+                foreach (var childId in Enumerable.Reverse(GetChildrenIds(current))) pending.Push(childId);
             }
         }
 

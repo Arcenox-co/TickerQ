@@ -117,8 +117,8 @@ def main() -> int:
     args = parser.parse_args()
     if not args.packages.is_dir():
         parser.error(f"Package directory does not exist: {args.packages}")
-    if not re.fullmatch(r"net(?:8|9|10)\.0", args.framework):
-        parser.error("--framework must be net8.0, net9.0 or net10.0")
+    if not re.fullmatch(r"net(?:8|9|10|11)\.0", args.framework):
+        parser.error("--framework must be net8.0, net9.0, net10.0 or net11.0")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", args.version):
         parser.error("--version must be an exact three-part NuGet version (optionally prerelease)")
     if args.aot and not args.rid:

@@ -1,12 +1,20 @@
 ﻿<Project>
 
+    <!--
+      One codebase builds every supported .NET line. TickerQDotNetMajor selects it (default 10); CI builds,
+      tests, and packs each line with -p:TickerQDotNetMajor=<8|9|10|11>. The package major follows the
+      .NET major and the minor/patch are shared, so one commit releases 8.5.0, 9.5.0, 10.5.0, and 11.5.0.
+      Line-specific dependency versions live in eng/DotNetLines.props; version-specific code lives in
+      Compat files guarded by the NETx_0_OR_GREATER symbols (EF Core majors match the .NET major).
+    -->
     <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
-        <VersionPrefix>10.5.0</VersionPrefix>
+        <TickerQDotNetMajor Condition="'$(TickerQDotNetMajor)' == ''">10</TickerQDotNetMajor>
+        <TickerQVersionMinorPatch>5.0</TickerQVersionMinorPatch>
+        <TargetFramework>net$(TickerQDotNetMajor).0</TargetFramework>
+        <VersionPrefix>$(TickerQDotNetMajor).$(TickerQVersionMinorPatch)</VersionPrefix>
         <VersionSuffix>rc.1</VersionSuffix>
         <TickerQFunctionalMinorLine>$([System.Version]::Parse('$(VersionPrefix)').Minor).x</TickerQFunctionalMinorLine>
-        <DotNetVersion>[10.0.0,11.0.0)</DotNetVersion>
-        <DotNetAbstractionsVersion>[10.0.0,11.0.0)</DotNetAbstractionsVersion>
+        <LangVersion>14.0</LangVersion>
         <RepositoryUrl>https://github.com/arcenox-co/TickerQ</RepositoryUrl>
         <PackageProjectUrl>https://tickerq.net/</PackageProjectUrl>
         <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
@@ -14,12 +22,13 @@
         <PackageTags>ticker;queue;cron;time;scheduler;fire-and-forget</PackageTags>
         <PackageIcon>icon.jpg</PackageIcon>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-        <LangVersion>default</LangVersion>
 
         <!-- Source Link -->
         <PublishRepositoryUrl>true</PublishRepositoryUrl>
         <EmbedUntrackedSources>true</EmbedUntrackedSources>
-        <IncludeSymbols>false</IncludeSymbols>
+        <!-- Symbols ship as .snupkg (PDBs with Source Link) to the NuGet.org symbol server, next to each package. -->
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
         <Deterministic>true</Deterministic>
         <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
     </PropertyGroup>
@@ -38,5 +47,6 @@
         <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.401" PrivateAssets="All" />
     </ItemGroup>
 
+    <Import Project="$(MSBuildThisFileDirectory)../eng/DotNetLines.props" />
     <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
 </Project>

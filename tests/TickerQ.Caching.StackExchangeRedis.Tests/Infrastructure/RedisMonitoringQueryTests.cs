@@ -55,10 +55,10 @@ public sealed class RedisMonitoringReaderTests
         {
             Id = Guid.NewGuid(), Status = TickerStatus.Done, CompletedUtc = now.AddSeconds(-i)
         }).ToArray();
-        foreach (var row in rows.Concat(rows).Concat(rows.Reverse())) collector.Add(row);
+        foreach (var row in rows.Concat(rows).Concat(Enumerable.Reverse(rows))) collector.Add(row);
         var page = collector.Build();
         Assert.Equal(513, page.Completed.Length);
-        Assert.Equal(rows.Reverse().Take(513).Select(x => x.Id), page.Completed.Select(x => x.Id));
+        Assert.Equal(Enumerable.Reverse(rows).Take(513).Select(x => x.Id), page.Completed.Select(x => x.Id));
     }
 }
 

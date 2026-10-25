@@ -16,6 +16,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
+using TickerQ.EntityFrameworkCore.Compat;
 using TickerQ.EntityFrameworkCore.DbContextFactory;
 using TickerQ.EntityFrameworkCore.Configurations;
 using TickerQ.EntityFrameworkCore.Entities;
@@ -904,7 +905,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                     .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                                 x.Id == functionContext.TickerId && x.LockHolder == _lockHolder &&
                                 x.AcquisitionToken == functionContext.AcquisitionToken);
-                affected = await query.ExecuteUpdateAsync(
+                affected = await query.ExecuteTickerUpdateAsync(
                     setter => setter.UpdateCronTickerOccurrence<TCronTicker>(
                         functionContext, NextLeaseUntil(now)), ct).ConfigureAwait(false);
             }
@@ -928,7 +929,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 if (functionContext.ParentId == null)
                     query = query.Where(x => x.LockHolder == _lockHolder &&
                                              x.AcquisitionToken == functionContext.AcquisitionToken);
-                affected = await query.ExecuteUpdateAsync(
+                affected = await query.ExecuteTickerUpdateAsync(
                     setter => setter.UpdateTimeTicker<TTimeTicker>(
                         functionContext, now, NextLeaseUntil(now)), ct).ConfigureAwait(false);
             }
@@ -1082,7 +1083,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                         ? query.Where(x => x.LockHolder == _lockHolder &&
                                            x.AcquisitionToken == functionContext.AcquisitionToken)
                         : query.Where(_ => false);
-                    affected = await query.ExecuteUpdateAsync(
+                    affected = await query.ExecuteTickerUpdateAsync(
                         setter => setter.UpdateCronTickerOccurrence<TCronTicker>(
                             functionContext, NextLeaseUntil(now)), ct).ConfigureAwait(false);
                 }
@@ -1110,7 +1111,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                             ? query.Where(x => x.LockHolder == _lockHolder &&
                                                x.AcquisitionToken == functionContext.AcquisitionToken)
                             : query.Where(_ => false);
-                    affected = await query.ExecuteUpdateAsync(
+                    affected = await query.ExecuteTickerUpdateAsync(
                         setter => setter.UpdateTimeTicker<TTimeTicker>(
                             functionContext, now, NextLeaseUntil(now)), ct).ConfigureAwait(false);
                 }
@@ -1697,7 +1698,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                                        x.AcquisitionToken == functionContexts.AcquisitionToken)
                     : query.Where(_ => false);
 
-            var affected = await query.ExecuteUpdateAsync(
+            var affected = await query.ExecuteTickerUpdateAsync(
                 setter => setter.UpdateTimeTicker<TTimeTicker>(
                     functionContexts, now, NextLeaseUntil(now)), cancellationToken).ConfigureAwait(false);
             if (transaction != null)
@@ -1785,7 +1786,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 }
 
                 var now = _clock.UtcNow;
-                return await query.ExecuteUpdateAsync(
+                return await query.ExecuteTickerUpdateAsync(
                     setter => setter.UpdateTimeTicker<TTimeTicker>(functionContext, now, NextLeaseUntil(now)), ct)
                     .ConfigureAwait(false);
             }, cancellationToken).ConfigureAwait(false);
@@ -1798,7 +1799,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         await context.Set<TTimeTicker>()
             .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Status != TickerStatus.Cancelled)
             .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(idList, x => x.Id))
-            .ExecuteUpdateAsync(setter => setter.UpdateTimeTicker<TTimeTicker>(
+            .ExecuteTickerUpdateAsync(setter => setter.UpdateTimeTicker<TTimeTicker>(
                 functionContext, updateNow, NextLeaseUntil(updateNow)), cancellationToken).ConfigureAwait(false);
     }
 
@@ -2766,7 +2767,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 : query.Where(_ => false);
 
         await query
-            .ExecuteUpdateAsync(setter => setter.UpdateCronTickerOccurrence<TCronTicker>(functionContext, NextLeaseUntil(now)), cancellationToken)
+            .ExecuteTickerUpdateAsync(setter => setter.UpdateCronTickerOccurrence<TCronTicker>(functionContext, NextLeaseUntil(now)), cancellationToken)
             .ConfigureAwait(false);
     }
     
@@ -3103,7 +3104,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                                    x.AcquisitionToken == functionContext.AcquisitionToken)
                 : query.Where(_ => false);
         await query
-            .ExecuteUpdateAsync(setter => setter.UpdateCronTickerOccurrence<TCronTicker>(functionContext, NextLeaseUntil(now)), cancellationToken)
+            .ExecuteTickerUpdateAsync(setter => setter.UpdateCronTickerOccurrence<TCronTicker>(functionContext, NextLeaseUntil(now)), cancellationToken)
             .ConfigureAwait(false);
     }
 

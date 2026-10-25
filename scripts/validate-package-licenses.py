@@ -43,6 +43,10 @@ PACKAGE_AUTHORS = {
     "TickerQ.MongoDB": "Arcenox,Alex Brown",
 }
 EXPECTED_COPYRIGHT = "Copyright 2025-present Arcenox LLC and contributors"
+# Every library package ships a .snupkg (portable PDBs with Source Link) for the NuGet.org symbol
+# server. The source generator is analyzer-only: it has no lib PDB, so it has no symbol package.
+SYMBOL_PACKAGE_EXEMPT_IDS = {"TickerQ.SourceGenerator"}
+SYMBOL_PACKAGE_OPC_ENTRIES = {"[Content_Types].xml", "_rels/.rels"}
 
 
 def _text(element: ET.Element | None) -> str:
@@ -80,6 +84,45 @@ def _read_package(path: Path) -> tuple[str, str, ET.Element, set[str], zipfile.Z
         raise
 
 
+def _validate_symbol_package(
+    path: Path, expected_version: str, packages: dict[str, Path]
+) -> list[str]:
+    """A .snupkg must belong to a validated .nupkg and contain nothing but PDBs and package metadata."""
+    try:
+        package_id, version, metadata, names, archive = _read_package(path)
+    except (OSError, ValueError, ET.ParseError, zipfile.BadZipFile) as exc:
+        return [f"unexpected symbol package {path.name}: cannot inspect package: {exc}"]
+    archive.close()
+
+    errors: list[str] = []
+    package_key = package_id.casefold()
+    if package_key not in packages or package_id in SYMBOL_PACKAGE_EXEMPT_IDS:
+        return [f"unexpected symbol package {path.name}: no matching library package"]
+    if path.name != f"{package_id}.{version}.snupkg":
+        errors.append(f"{path.name}: symbol package name must be {package_id}.{version}.snupkg")
+    if version != expected_version:
+        errors.append(f"{path.name}: version {version!r} != expected {expected_version!r}")
+    package_types = {
+        element.attrib.get("name", "") for element in metadata.findall(".//{*}packageType")
+    }
+    if "SymbolsPackage" not in package_types:
+        errors.append(f"{path.name}: not declared as a SymbolsPackage")
+    pdbs = [name for name in names if name.startswith("lib/") and name.endswith(".pdb")]
+    if not pdbs:
+        errors.append(f"{path.name}: contains no lib PDB")
+    other_entries = sorted(
+        name
+        for name in names
+        if name not in pdbs
+        and name not in SYMBOL_PACKAGE_OPC_ENTRIES
+        and not name.endswith(".nuspec")
+        and not (name.startswith("package/services/metadata/core-properties/") and name.endswith(".psmdcp"))
+    )
+    if other_entries:
+        errors.append(f"{path.name}: unexpected symbol package entries: {', '.join(other_entries)}")
+    return errors
+
+
 def validate(
     directory: Path,
     expected_version: str,
@@ -87,23 +130,27 @@ def validate(
     canonical_notices: bytes,
     canonical_dashboard_notices: bytes,
     expected_repository_commit: str | None = None,
+    require_symbol_packages: bool = True,
 ) -> list[str]:
+    """Validates a package directory. With require_symbol_packages, every library package must have a
+    matching .snupkg; without it (packages read back from the registry), no .snupkg is allowed."""
     errors: list[str] = []
+    allowed_suffixes = (".nupkg", ".snupkg") if require_symbol_packages else (".nupkg",)
     unexpected_entries = sorted(
         path.name
         for path in directory.iterdir()
-        if path.is_symlink() or not path.is_file() or not path.name.endswith(".nupkg")
+        if path.is_symlink() or not path.is_file() or not path.name.endswith(allowed_suffixes)
     )
     if unexpected_entries:
         errors.append(
             "package directory contains unexpected entries: " + ", ".join(unexpected_entries)
         )
     packages: dict[str, Path] = {}
-    version_match = re.match(r"^(8|9|10)\.(\d+)(?:\.|-)", expected_version)
+    version_match = re.match(r"^(8|9|10|11)\.(\d+)(?:\.|-)", expected_version)
     if version_match is None or int(version_match.group(2)) < 5:
         errors.append(
             f"version {expected_version!r} is outside the commercial version family "
-            "(.NET major 8, 9, or 10; functional minor >= 5)"
+            "(.NET major 8, 9, 10, or 11; functional minor >= 5)"
         )
 
     for path in sorted(directory.glob("*.nupkg")):
@@ -235,6 +282,23 @@ def validate(
     if missing:
         errors.append(f"missing expected packages: {', '.join(missing)}")
 
+    if require_symbol_packages:
+        symbol_packages: set[str] = set()
+        for path in sorted(directory.glob("*.snupkg")):
+            symbol_errors = _validate_symbol_package(path, expected_version, packages)
+            errors.extend(symbol_errors)
+            if not symbol_errors:
+                symbol_packages.add(path.name.casefold())
+        missing_symbols = sorted(
+            package_id
+            for package_key, package_id in EXPECTED_PACKAGE_IDS_BY_FOLD.items()
+            if package_key in packages
+            and package_id not in SYMBOL_PACKAGE_EXEMPT_IDS
+            and f"{package_id}.{expected_version}.snupkg".casefold() not in symbol_packages
+        )
+        if missing_symbols:
+            errors.append(f"missing symbol packages: {', '.join(missing_symbols)}")
+
     return errors
 
 
@@ -246,6 +310,11 @@ def main() -> int:
     parser.add_argument("--third-party-notices", required=True, type=Path)
     parser.add_argument("--dashboard-third-party-notices", required=True, type=Path)
     parser.add_argument("--repository-commit")
+    parser.add_argument(
+        "--no-symbol-packages",
+        action="store_true",
+        help="The directory holds packages read back from the registry: no .snupkg is expected or allowed",
+    )
     args = parser.parse_args()
 
     if not args.directory.is_dir():
@@ -267,6 +336,7 @@ def main() -> int:
         args.third_party_notices.read_bytes(),
         args.dashboard_third_party_notices.read_bytes(),
         args.repository_commit,
+        require_symbol_packages=not args.no_symbol_packages,
     )
     if errors:
         for error in errors:

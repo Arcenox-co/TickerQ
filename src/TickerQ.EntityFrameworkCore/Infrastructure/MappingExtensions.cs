@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore.Query;
+using TickerQ.EntityFrameworkCore.Compat;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Models;
@@ -157,7 +158,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             };
 
         internal static void UpdateCronTickerOccurrence<TCronTicker>(
-            this UpdateSettersBuilder<CronTickerOccurrenceEntity<TCronTicker>> setters,
+            this TickerSetters<CronTickerOccurrenceEntity<TCronTicker>> setters,
             InternalFunctionContext functionContext, DateTime? leaseUntil = null)
             where TCronTicker : CronTickerEntity, new()
         {
@@ -277,7 +278,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             }
         }
 
-        internal static void UpdateTimeTicker<TTimeTicker>(this UpdateSettersBuilder<TTimeTicker> setters,
+        internal static void UpdateTimeTicker<TTimeTicker>(this TickerSetters<TTimeTicker> setters,
             InternalFunctionContext functionContext, DateTime updatedAt, DateTime? leaseUntil = null)
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         {

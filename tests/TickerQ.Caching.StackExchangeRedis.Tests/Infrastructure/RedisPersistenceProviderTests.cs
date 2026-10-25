@@ -2691,7 +2691,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
         async IAsyncEnumerable<RedisValue> RepeatedMembers()
         {
             foreach (var ticker in tickers) yield return ticker.Id.ToString();
-            foreach (var ticker in tickers.Reverse()) yield return ticker.Id.ToString();
+            foreach (var ticker in Enumerable.Reverse(tickers)) yield return ticker.Id.ToString();
             await Task.CompletedTask;
         }
     }

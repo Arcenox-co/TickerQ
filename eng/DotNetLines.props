@@ -1,0 +1,70 @@
+<Project>
+    <!--
+      Dependency versions for the .NET line selected by TickerQDotNetMajor (see src/Directory.Build.props).
+      DotNetVersion / DotNetAbstractionsVersion: Microsoft.* packages that ship with the runtime line.
+      TickerQPatchedVersion: the lowest patched release required where a minimum matters (security fixes).
+      Provider versions are used by tests and samples only; an empty value means that provider has no
+      release for this line, and projects leave it (and the tests that need it) out.
+    -->
+    <PropertyGroup>
+        <TickerQDotNetNextMajor>$([MSBuild]::Add($(TickerQDotNetMajor), 1))</TickerQDotNetNextMajor>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(TickerQDotNetMajor)' == '8'">
+        <!-- NSec.Cryptography 26.x requires .NET 9. -->
+        <TickerQNSecVersion>25.4.0</TickerQNSecVersion>
+        <TickerQDotNetMinimumVersion>8.0.0</TickerQDotNetMinimumVersion>
+        <TickerQPatchedMinimumVersion>8.0.32</TickerQPatchedMinimumVersion>
+        <TickerQNpgsqlEfVersion>8.0.11</TickerQNpgsqlEfVersion>
+        <TickerQMySqlEfVersion>8.0.31</TickerQMySqlEfVersion>
+        <TickerQOracleEfVersion>8.23.26400</TickerQOracleEfVersion>
+        <TickerQMicrotingEfVersion></TickerQMicrotingEfVersion>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(TickerQDotNetMajor)' == '9'">
+        <TickerQNSecVersion>26.4.0</TickerQNSecVersion>
+        <TickerQDotNetMinimumVersion>9.0.0</TickerQDotNetMinimumVersion>
+        <TickerQPatchedMinimumVersion>9.0.21</TickerQPatchedMinimumVersion>
+        <TickerQNpgsqlEfVersion>9.0.4</TickerQNpgsqlEfVersion>
+        <TickerQMySqlEfVersion>9.0.20</TickerQMySqlEfVersion>
+        <TickerQOracleEfVersion>9.23.26400</TickerQOracleEfVersion>
+        <TickerQMicrotingEfVersion>9.0.8</TickerQMicrotingEfVersion>
+        <!-- Microting's 9.x and 11.0 previews still ship Pomelo's assembly and namespace; 10.x renamed it. -->
+        <TickerQMicrotingNamespace>Pomelo</TickerQMicrotingNamespace>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(TickerQDotNetMajor)' == '10'">
+        <TickerQNSecVersion>26.4.0</TickerQNSecVersion>
+        <TickerQDotNetMinimumVersion>10.0.0</TickerQDotNetMinimumVersion>
+        <TickerQPatchedMinimumVersion>10.0.13</TickerQPatchedMinimumVersion>
+        <TickerQNpgsqlEfVersion>10.0.0</TickerQNpgsqlEfVersion>
+        <TickerQMySqlEfVersion>10.0.1</TickerQMySqlEfVersion>
+        <TickerQOracleEfVersion>10.23.26300</TickerQOracleEfVersion>
+        <TickerQMicrotingEfVersion>10.0.8</TickerQMicrotingEfVersion>
+        <TickerQMicrotingNamespace>Microting</TickerQMicrotingNamespace>
+    </PropertyGroup>
+
+    <!-- .NET 11 is a release candidate: ranges start at the RC so prerelease packages satisfy them. -->
+    <PropertyGroup Condition="'$(TickerQDotNetMajor)' == '11'">
+        <TickerQNSecVersion>26.4.0</TickerQNSecVersion>
+        <TickerQDotNetMinimumVersion>11.0.0-rc.2.26504.105</TickerQDotNetMinimumVersion>
+        <TickerQPatchedMinimumVersion>11.0.0-rc.2.26504.105</TickerQPatchedMinimumVersion>
+        <TickerQNpgsqlEfVersion>11.0.0-rc.2</TickerQNpgsqlEfVersion>
+        <TickerQMySqlEfVersion>11.0.0-preview</TickerQMySqlEfVersion>
+        <TickerQOracleEfVersion></TickerQOracleEfVersion>
+        <TickerQMicrotingEfVersion>11.0.0-preview.1</TickerQMicrotingEfVersion>
+        <TickerQMicrotingNamespace>Pomelo</TickerQMicrotingNamespace>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <DotNetVersion>[$(TickerQDotNetMinimumVersion),$(TickerQDotNetNextMajor).0.0)</DotNetVersion>
+        <!-- Abstractions support older runtimes, and Microsoft.Extensions.AI needs current ones, so only a floor is set. -->
+        <DotNetAbstractionsVersion>[$(TickerQDotNetMinimumVersion),)</DotNetAbstractionsVersion>
+        <TickerQPatchedVersion>[$(TickerQPatchedMinimumVersion),$(TickerQDotNetNextMajor).0.0)</TickerQPatchedVersion>
+    </PropertyGroup>
+
+    <Target Name="TickerQValidateDotNetLine" BeforeTargets="Restore;CollectPackageReferences;Build"
+            Condition="'$(TickerQDotNetMinimumVersion)' == ''">
+        <Error Text="TickerQDotNetMajor '$(TickerQDotNetMajor)' is not a supported .NET line. Use 8, 9, 10, or 11." />
+    </Target>
+</Project>

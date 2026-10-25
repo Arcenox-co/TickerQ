@@ -24,12 +24,13 @@ public class PartialClassAndParameterOrderTests
                 public sealed class Dependency { }
                 partial class Jobs { public Jobs(Dependency dependency) { } }
             }
+            """ + (SchemaTestHarness.PlatformProvidesDependencyInjection ? "" : """
             namespace Microsoft.Extensions.DependencyInjection {
                 public static class ServiceExtensions {
                     public static T GetService<T>(this System.IServiceProvider provider) => default;
                 }
             }
-            """);
+            """));
         Assert.Empty(result.CompileErrors);
         var factories = CSharpSyntaxTree.ParseText(result.Generated).GetRoot().DescendantNodes()
             .OfType<MethodDeclarationSyntax>().Where(x => x.Identifier.ValueText == "Create_TestApp_Jobs");

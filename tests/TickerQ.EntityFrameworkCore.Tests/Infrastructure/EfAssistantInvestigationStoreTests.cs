@@ -191,7 +191,7 @@ public sealed class EfAssistantInvestigationStoreTests
         await store.CompleteAsync("orders", oldId!.Value, "old diagnosis", "ops-model");
         await db.Set<AssistantInvestigationEntity>().Where(x => x.Id == oldId)
             .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.CreatedAt,
-                DateTime.UtcNow.AddDays(-2)));
+                ClientValues.UtcNow.AddDays(-2)));
         Assert.True(await store.SetReviewStateAsync("orders", oldId.Value,
             AssistantInvestigationValues.Reviewed, "operator-1"));
 
@@ -224,7 +224,7 @@ public sealed class EfAssistantInvestigationStoreTests
             reviewState, "operator-1"));
         await db.Set<AssistantInvestigationEntity>().Where(x => x.Id == expiringId)
             .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.ReviewedAt,
-                DateTime.UtcNow.AddDays(-2)));
+                ClientValues.UtcNow.AddDays(-2)));
 
         Assert.NotNull(await store.TryStartAsync(Seed("orders", Guid.NewGuid(), DateTime.UtcNow)));
 
@@ -250,7 +250,7 @@ public sealed class EfAssistantInvestigationStoreTests
             reviewState, "operator-1"));
         await db.Set<AssistantInvestigationEntity>().Where(x => x.Id == retainedId)
             .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.ReviewedAt,
-                DateTime.UtcNow.AddDays(-2)));
+                ClientValues.UtcNow.AddDays(-2)));
 
         Assert.NotNull(await store.TryStartAsync(Seed("orders", Guid.NewGuid(), DateTime.UtcNow)));
 
@@ -281,8 +281,8 @@ public sealed class EfAssistantInvestigationStoreTests
             reviewState, "operator-1"));
         await db.Set<AssistantInvestigationEntity>().Where(x => x.Id == retainedId)
             .ExecuteUpdateAsync(setters => setters
-                .SetProperty(x => x.CreatedAt, DateTime.UtcNow.AddDays(-2))
-                .SetProperty(x => x.ReviewedAt, DateTime.UtcNow));
+                .SetProperty(x => x.CreatedAt, ClientValues.UtcNow.AddDays(-2))
+                .SetProperty(x => x.ReviewedAt, ClientValues.UtcNow));
 
         Assert.NotNull(await store.TryStartAsync(Seed("orders", Guid.NewGuid(), DateTime.UtcNow)));
 
@@ -452,7 +452,7 @@ public sealed class EfAssistantInvestigationStoreTests
 
         await db.Set<AssistantInvestigationLeaseEntity>()
             .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.LeaseUntil,
-                DateTime.UtcNow.AddSeconds(-1)));
+                ClientValues.UtcNow.AddSeconds(-1)));
         Assert.True(await store.TryAcquireEvidenceLeaseAsync("orders", fingerprint,
             secondOwner, DateTime.UtcNow.AddMinutes(5)));
         await store.ReleaseEvidenceLeaseAsync("orders", fingerprint, secondOwner);
@@ -515,7 +515,7 @@ public sealed class EfAssistantInvestigationStoreTests
         var recentId = await store.TryStartAsync(Seed("orders", recentExecution, DateTime.UtcNow));
         await db.Set<AssistantInvestigationEntity>().Where(x => x.Id == staleId)
             .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.UpdatedAt,
-                DateTime.UtcNow.AddMinutes(-10)));
+                ClientValues.UtcNow.AddMinutes(-10)));
 
         await store.AbandonStaleProcessingAsync("orders", staleExecution,
             DateTime.UtcNow.AddMinutes(-5));

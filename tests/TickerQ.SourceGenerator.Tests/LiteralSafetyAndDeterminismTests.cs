@@ -96,15 +96,17 @@ public class LiteralSafetyAndDeterminismTests
     {
         var parseOptions = new CSharpParseOptions(LanguageVersion.Preview);
         var sourceTrees = sources.Select(source => CSharpSyntaxTree.ParseText(source, parseOptions));
-        var stubTree = CSharpSyntaxTree.ParseText(Stub, parseOptions);
-        var references = (((string?)AppDomain.CurrentDomain.GetData("TRUSTED_PLATFORM_ASSEMBLIES"))
+        var trustedPaths = (((string?)AppDomain.CurrentDomain.GetData("TRUSTED_PLATFORM_ASSEMBLIES"))
                 ?.Split(Path.PathSeparator) ?? Array.Empty<string>())
             .Where(File.Exists)
-            .Select(path => MetadataReference.CreateFromFile(path))
             .ToList();
+        var references = trustedPaths.Select(path => MetadataReference.CreateFromFile(path)).ToList();
+        var stubs = new List<SyntaxTree> { CSharpSyntaxTree.ParseText(Stub, parseOptions) };
+        if (!SchemaTestHarness.PlatformProvidesDependencyInjection)
+            stubs.Add(CSharpSyntaxTree.ParseText(DependencyInjectionStub, parseOptions));
         var compilation = CSharpCompilation.Create(
             "LiteralSafetyTests",
-            sourceTrees.Append(stubTree),
+            sourceTrees.Concat(stubs),
             references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
         GeneratorDriver driver = CSharpGeneratorDriver.Create(
@@ -189,6 +191,10 @@ public class LiteralSafetyAndDeterminismTests
                 public TickerFunctionRef(string name) { }
             }
         }
+        """;
+
+    // Added only when the platform lacks DI abstractions (see SchemaTestHarness.PlatformProvidesDependencyInjection).
+    private const string DependencyInjectionStub = """
         namespace Microsoft.Extensions.DependencyInjection
         {
             [System.AttributeUsage(System.AttributeTargets.Parameter)]

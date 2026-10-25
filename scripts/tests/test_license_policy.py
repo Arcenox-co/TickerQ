@@ -118,8 +118,9 @@ class LicensePolicyTests(unittest.TestCase):
         self.assertIn("npm_archive = npm_archive_input.resolve()", publish_workflow)
         self.assertIn("--registry https://registry.npmjs.org", publish_workflow)
         self.assertIn("continue-on-error: true", build_workflow)
-        self.assertIn("path: ./nupkgs/*.nupkg", build_workflow)
-        self.assertNotIn("*.snupkg", build_workflow)
+        self.assertIn("./nupkgs/*.nupkg", build_workflow)
+        self.assertIn("./nupkgs/*.snupkg", build_workflow)
+        self.assertIn("--no-symbol-packages", publish_workflow)
         self.assertNotIn("symbol_package=", publish_workflow)
         self.assertNotIn("--version '${{ steps.versions.outputs", publish_workflow)
         self.assertNotIn("python3 release-source/scripts/", publish_workflow)
@@ -136,7 +137,8 @@ class LicensePolicyTests(unittest.TestCase):
             "Copyright 2025-present Arcenox LLC and contributors",
             root_props.findtext(".//Copyright"),
         )
-        self.assertEqual("false", source_props.findtext(".//IncludeSymbols"))
+        self.assertEqual("true", source_props.findtext(".//IncludeSymbols"))
+        self.assertEqual("snupkg", source_props.findtext(".//SymbolPackageFormat"))
         self.assertIsNone(source_props.find(".//Authors"))
         self.assertIsNone(source_props.find(".//Copyright"))
 
@@ -581,6 +583,7 @@ class LicensePolicyTests(unittest.TestCase):
     def test_validator_rejects_unexpected_artifact_entries(self) -> None:
         validator = load_validator()
         with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "unexpected.txt").write_bytes(b"unexpected")
             (Path(directory) / "unexpected.snupkg").write_bytes(b"unexpected")
             errors = validator.validate(
                 Path(directory),
@@ -590,8 +593,88 @@ class LicensePolicyTests(unittest.TestCase):
                 b"dashboard notices",
             )
 
+        self.assertTrue(any("unexpected entries: unexpected.txt" in error for error in errors), errors)
         self.assertTrue(
-            any("unexpected entries: unexpected.snupkg" in error for error in errors), errors
+            any("unexpected symbol package unexpected.snupkg" in error for error in errors), errors
+        )
+
+    @staticmethod
+    def _write_symbol_fixture(directory: Path, extra_entry: str | None = None) -> None:
+        nuspec = """<?xml version="1.0"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>TickerQ</id>
+    <version>10.5.0-beta</version>
+    <license type="file">LICENSE.md</license>
+    <requireLicenseAcceptance>true</requireLicenseAcceptance>
+    <repository type="git" url="https://github.com/arcenox-co/TickerQ" />
+  </metadata>
+</package>
+"""
+        with zipfile.ZipFile(directory / "TickerQ.10.5.0-beta.nupkg", "w") as archive:
+            archive.writestr("TickerQ.nuspec", nuspec)
+            archive.writestr("LICENSE.md", b"commercial")
+            archive.writestr("THIRD-PARTY-NOTICES.md", b"notices")
+            archive.writestr("lib/net10.0/TickerQ.dll", b"dll")
+        symbols_nuspec = nuspec.replace(
+            "<metadata>",
+            '<metadata>\n    <packageTypes><packageType name="SymbolsPackage" /></packageTypes>',
+        )
+        with zipfile.ZipFile(directory / "TickerQ.10.5.0-beta.snupkg", "w") as archive:
+            archive.writestr("TickerQ.nuspec", symbols_nuspec)
+            archive.writestr("[Content_Types].xml", b"types")
+            archive.writestr("_rels/.rels", b"rels")
+            archive.writestr("package/services/metadata/core-properties/abc.psmdcp", b"core")
+            archive.writestr("lib/net10.0/TickerQ.pdb", b"pdb")
+            if extra_entry is not None:
+                archive.writestr(extra_entry, b"extra")
+
+    def test_validator_accepts_a_matching_symbol_package(self) -> None:
+        validator = load_validator()
+        with tempfile.TemporaryDirectory() as directory:
+            self._write_symbol_fixture(Path(directory))
+            errors = validator.validate(
+                Path(directory), "10.5.0-beta", b"commercial", b"notices", b"dashboard notices"
+            )
+
+        symbol_errors = [error for error in errors if "snupkg" in error or "symbol" in error]
+        self.assertEqual([], symbol_errors)
+
+    def test_validator_rejects_symbol_packages_with_anything_but_pdbs(self) -> None:
+        validator = load_validator()
+        with tempfile.TemporaryDirectory() as directory:
+            self._write_symbol_fixture(Path(directory), extra_entry="lib/net10.0/TickerQ.dll")
+            errors = validator.validate(
+                Path(directory), "10.5.0-beta", b"commercial", b"notices", b"dashboard notices"
+            )
+
+        self.assertTrue(
+            any("unexpected symbol package entries: lib/net10.0/TickerQ.dll" in error for error in errors),
+            errors,
+        )
+
+    def test_validator_requires_symbol_packages_except_for_registry_copies(self) -> None:
+        validator = load_validator()
+        with tempfile.TemporaryDirectory() as directory:
+            self._write_symbol_fixture(Path(directory))
+            (Path(directory) / "TickerQ.10.5.0-beta.snupkg").unlink()
+            missing = validator.validate(
+                Path(directory), "10.5.0-beta", b"commercial", b"notices", b"dashboard notices"
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            self._write_symbol_fixture(Path(directory))
+            registry = validator.validate(
+                Path(directory),
+                "10.5.0-beta",
+                b"commercial",
+                b"notices",
+                b"dashboard notices",
+                require_symbol_packages=False,
+            )
+
+        self.assertTrue(any("missing symbol packages: TickerQ" in error for error in missing), missing)
+        self.assertTrue(
+            any("unexpected entries: TickerQ.10.5.0-beta.snupkg" in error for error in registry), registry
         )
 
     def test_validator_rejects_unrecognized_commercial_version_family(self) -> None:

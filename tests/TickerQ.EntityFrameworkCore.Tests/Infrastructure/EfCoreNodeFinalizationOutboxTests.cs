@@ -432,7 +432,7 @@ public sealed class EfCoreNodeFinalizationOutboxTests : IAsyncLifetime
     {
         var context = new InternalFunctionContext { TickerId = id, Type = type, AcquisitionToken = token }
             .SetProperty(x => x.Status, status)
-            .SetProperty(x => x.ExecutedAt, DateTime.UtcNow)
+            .SetProperty(x => x.ExecutedAt, ClientValues.UtcNow)
             .SetProperty(x => x.ReleaseLock, true);
         if (status is TickerStatus.Done or TickerStatus.DueDone)
             context.SetProperty(x => x.ResultEnvelope, result);

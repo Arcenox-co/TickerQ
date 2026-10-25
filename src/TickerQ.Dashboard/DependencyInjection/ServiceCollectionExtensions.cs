@@ -114,12 +114,8 @@ namespace TickerQ.Dashboard.DependencyInjection
                                            | ForwardedHeaders.XForwardedProto
                                            | ForwardedHeaders.XForwardedHost,
                     };
-                    forwardedOptions.KnownProxies.Clear();
-                    forwardedOptions.KnownIPNetworks.Clear();
-                    foreach (var proxy in config.TrustedForwardedProxies)
-                        forwardedOptions.KnownProxies.Add(proxy);
-                    foreach (var network in config.TrustedForwardedNetworks)
-                        forwardedOptions.KnownIPNetworks.Add(network);
+                    Compat.ForwardedHeadersCompat.TrustOnly(forwardedOptions, config.TrustedForwardedProxies,
+                        config.TrustedForwardedNetworks);
                     dashboardApp.UseForwardedHeaders(forwardedOptions);
                 }
 

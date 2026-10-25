@@ -260,7 +260,10 @@ public sealed class EfCoreDataMigrationPipeline
             var name = index.GetDatabaseName() ??
                 throw new InvalidOperationException(
                     $"Required TickerQ index on '{entity.ClrType.Name}' has no database name.");
-            var columns = index.Properties.Select(property => property.GetColumnName(store) ??
+            // TickerQ indexes cover scalar columns only. EF Core 11 types index properties as IPropertyBase
+            // (indexes can include complex properties), earlier versions as IProperty.
+            var properties = index.Properties.Cast<IProperty>().ToArray();
+            var columns = properties.Select(property => property.GetColumnName(store) ??
                     throw new InvalidOperationException(
                         $"Required TickerQ index '{name}' property '{property.Name}' has no column mapping."))
                 .ToArray();
@@ -270,7 +273,7 @@ public sealed class EfCoreDataMigrationPipeline
                 ? null
                 : entity.GetSchema();
             var nullableUniqueSeedKeyColumn = index.IsUnique
-                ? index.Properties
+                ? properties
                     .Where(property => property.Name == "SeedKey" && property.IsNullable)
                     .Select(property => property.GetColumnName(store))
                     .SingleOrDefault()

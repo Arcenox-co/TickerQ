@@ -8,7 +8,8 @@
         <PackageTags>dashboard;monitoring;scheduler;ui</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <Nullable>annotations</Nullable>
-        <IsAotCompatible>true</IsAotCompatible>
+        <!-- SignalR supports Native AOT from .NET 9; the .NET 8 dashboard is not AOT-compatible. -->
+        <IsAotCompatible Condition="'$(TickerQDotNetMajor)' != '8'">true</IsAotCompatible>
     </PropertyGroup>
 
     <ItemGroup>
