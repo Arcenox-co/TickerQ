@@ -5,7 +5,7 @@ will install:
 
 ```sh
 python3 scripts/verify-package-consumers.py \
-  --packages ./nupkgs --version 10.5.0-rc.1 --framework net10.0 \
+  --packages ./nupkgs --version 10.5.0 --framework net10.0 \
   --rid linux-x64 --aot
 ```
 
@@ -20,7 +20,7 @@ Optional provider lanes connect to infrastructure supplied by the release job:
 
 ```sh
 python3 scripts/verify-package-consumers.py \
-  --packages ./nupkgs --version 10.5.0-rc.1 --framework net10.0 \
+  --packages ./nupkgs --version 10.5.0 --framework net10.0 \
   --rid linux-x64 --aot \
   --license /run/secrets/tickerq.tqlicense \
   --redis-connection localhost:6379,abortConnect=true \

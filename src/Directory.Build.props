@@ -12,7 +12,6 @@
         <TickerQVersionMinorPatch>5.0</TickerQVersionMinorPatch>
         <TargetFramework>net$(TickerQDotNetMajor).0</TargetFramework>
         <VersionPrefix>$(TickerQDotNetMajor).$(TickerQVersionMinorPatch)</VersionPrefix>
-        <VersionSuffix>rc.1</VersionSuffix>
         <TickerQFunctionalMinorLine>$([System.Version]::Parse('$(VersionPrefix)').Minor).x</TickerQFunctionalMinorLine>
         <LangVersion>14.0</LangVersion>
         <RepositoryUrl>https://github.com/arcenox-co/TickerQ</RepositoryUrl>
