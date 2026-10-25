@@ -275,6 +275,99 @@ public class DesignTimeToolDetectionTests
         }
     }
 
+    [Theory]
+    [InlineData("GetDocument.Insider", "GetDocument.Insider")]
+    [InlineData("MyApp", null)]
+    [InlineData("ef", null)]
+    [InlineData("getdocument.insider", null)]
+    [InlineData(null, null)]
+    public void Detect_Matches_Only_The_OpenApi_Document_Tool(string entryAssembly, string expected)
+        => Assert.Equal(expected, DesignTimeHost.Detect(entryAssembly));
+
+    [Fact]
+    public void Snapshot_Is_Skipped_Outside_A_Design_Time_Tool()
+    {
+        var services = new ServiceCollection();
+        services.AddHostedService<ApplicationHostedService>();
+
+        Assert.Null(DesignTimeHost.SnapshotHostedServices(services, toolName: null));
+    }
+
+    [Fact]
+    public void AddTickerQ_Keeps_Its_Hosted_Services_Outside_A_Design_Time_Tool()
+    {
+        var services = new ServiceCollection();
+        services.AddTickerQ(options => options.UseApplicationNamespace("design-time-tests"));
+
+        Assert.Contains(services, d => d.ServiceType == typeof(IHostedService)
+                                       && d.ImplementationType == typeof(TickerQStartupValidator));
+        Assert.DoesNotContain(services, d => d.ServiceType == typeof(IHostedService)
+                                             && d.ImplementationType == typeof(TickerQDesignTimeNoticeService));
+    }
+
+    [Fact]
+    public async Task Design_Time_Tool_Removes_Only_TickerQ_Hosted_Services()
+    {
+        var services = new ServiceCollection();
+        services.AddHostedService<ApplicationHostedService>();
+        var before = DesignTimeHost.SnapshotHostedServices(services, DesignTimeHost.GetDocumentInsider);
+
+        services.AddTickerQ(options => options.UseApplicationNamespace("design-time-tests"));
+        // Integrations registers its engine at index 0 so it stops last; it must be removed too.
+        services.Insert(0, ServiceDescriptor.Singleton<IHostedService>(_ => new InsertedFirstHostedService()));
+        Assert.True(services.Count(d => d.ServiceType == typeof(IHostedService)) > 3);
+
+        DesignTimeHost.SuppressHostedServices(services, before, DesignTimeHost.GetDocumentInsider);
+
+        var host = BuildMinimalHost(services);
+        var hostedServices = host.Services.GetServices<IHostedService>().ToList();
+        Assert.Collection(hostedServices,
+            service => Assert.IsType<ApplicationHostedService>(service),
+            service => Assert.IsType<TickerQDesignTimeNoticeService>(service));
+
+        foreach (var service in hostedServices)
+            await service.StartAsync(CancellationToken.None);
+
+        // Everything UseTickerQ and the managers need is still registered.
+        Assert.Same(host, host.UseTickerQ());
+        Assert.NotNull(host.Services.GetService<ITimeTickerManager<Utilities.Entities.TimeTickerEntity>>());
+        Assert.NotNull(host.Services.GetService<ICronTickerManager<Utilities.Entities.CronTickerEntity>>());
+    }
+
+    [Fact]
+    public async Task Design_Time_Notice_Logs_The_Tool_Name()
+    {
+        var logger = new RecordingLogger<TickerQDesignTimeNoticeService>();
+        var notice = new TickerQDesignTimeNoticeService(DesignTimeHost.GetDocumentInsider, logger);
+
+        await notice.StartAsync(CancellationToken.None);
+
+        var message = Assert.Single(logger.Messages);
+        Assert.Contains("did not start", message);
+        Assert.Contains(DesignTimeHost.GetDocumentInsider, message);
+    }
+
+    private sealed class ApplicationHostedService : IHostedService
+    {
+        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class InsertedFirstHostedService : IHostedService
+    {
+        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<string> Messages { get; } = [];
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception,
+            Func<TState, Exception, string> formatter) => Messages.Add(formatter(state, exception));
+    }
+
     private static IHost BuildMinimalHost(IServiceCollection services)
     {
         services.TryAddSingleton<IConfiguration>(new ConfigurationBuilder().Build());

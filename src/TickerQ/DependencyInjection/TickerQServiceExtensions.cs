@@ -36,6 +36,7 @@ namespace TickerQ.DependencyInjection
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
             where TCronTicker : CronTickerEntity, new()
         {
+            var hostedServicesBefore = DesignTimeHost.SnapshotHostedServices(services, DesignTimeHost.ToolName);
             var tickerExecutionContext = new TickerExecutionContext();
             var schedulerOptionsBuilder = new SchedulerOptionsBuilder();
             var optionInstance = new TickerOptionsBuilder<TTimeTicker,TCronTicker>(tickerExecutionContext, schedulerOptionsBuilder);
@@ -228,6 +229,10 @@ namespace TickerQ.DependencyInjection
 
             // Register AFTER initializer and scheduler to ensure it runs last
             services.AddHostedService<TickerQStartupValidator>();
+
+            // A design-time tool that starts the host (dotnet-getdocument) must not run startup I/O.
+            if (hostedServicesBefore != null)
+                DesignTimeHost.SuppressHostedServices(services, hostedServicesBefore, DesignTimeHost.ToolName);
 
             return services;
         }
