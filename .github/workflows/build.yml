@@ -141,9 +141,6 @@ jobs:
           dotnet restore src/TickerQ.Caching.StackExchangeRedis/TickerQ.Caching.StackExchangeRedis.csproj $LINE
           dotnet restore src/TickerQ.MongoDB/TickerQ.MongoDB.csproj $LINE
           dotnet restore src/TickerQ.Integrations/TickerQ.Integrations.csproj $LINE
-          dotnet restore hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj $LINE
-          dotnet restore hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj $LINE
-          dotnet restore hub/remoteExecutor/TickerQ.RemoteExecutor.Tests/TickerQ.RemoteExecutor.Tests.csproj $LINE
           dotnet restore tests/TickerQ.Tests/TickerQ.Tests.csproj $LINE
           dotnet restore tests/TickerQ.Integrations.Tests/TickerQ.Integrations.Tests.csproj $LINE
           dotnet restore tests/TickerQ.EntityFrameworkCore.Tests/TickerQ.EntityFrameworkCore.Tests.csproj $LINE
@@ -162,9 +159,6 @@ jobs:
           dotnet build src/TickerQ.Caching.StackExchangeRedis/TickerQ.Caching.StackExchangeRedis.csproj --configuration Release $LINE
           dotnet build src/TickerQ.MongoDB/TickerQ.MongoDB.csproj --configuration Release $LINE
           dotnet build src/TickerQ.Integrations/TickerQ.Integrations.csproj --configuration Release $LINE
-          dotnet build hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj --configuration Release $LINE
-          dotnet build hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj --configuration Release $LINE
-          dotnet build hub/remoteExecutor/TickerQ.RemoteExecutor.Tests/TickerQ.RemoteExecutor.Tests.csproj --configuration Release $LINE
           dotnet build tests/TickerQ.Tests/TickerQ.Tests.csproj --configuration Release $LINE
           dotnet build tests/TickerQ.Integrations.Tests/TickerQ.Integrations.Tests.csproj --configuration Release $LINE
           dotnet build tests/TickerQ.EntityFrameworkCore.Tests/TickerQ.EntityFrameworkCore.Tests.csproj --configuration Release $LINE
@@ -198,7 +192,6 @@ jobs:
           dotnet test tests/TickerQ.EntityFrameworkCore.Tests/ --configuration Release --no-build $LINE
           dotnet test tests/TickerQ.Caching.StackExchangeRedis.Tests/ --configuration Release --no-build -p:IsTestProject=true $LINE
           dotnet test tests/TickerQ.SourceGenerator.Tests/ --configuration Release --no-build $LINE
-          dotnet test hub/remoteExecutor/TickerQ.RemoteExecutor.Tests/ --configuration Release --no-build $LINE
 
       - name: Verify SQL Server seeding, edits and transactions
         env:
@@ -220,8 +213,6 @@ jobs:
           dotnet pack src/TickerQ.Caching.StackExchangeRedis/TickerQ.Caching.StackExchangeRedis.csproj --configuration Release --output ./nupkgs $LINE
           dotnet pack src/TickerQ.MongoDB/TickerQ.MongoDB.csproj --configuration Release --output ./nupkgs $LINE
           dotnet pack src/TickerQ.Integrations/TickerQ.Integrations.csproj --configuration Release --output ./nupkgs $LINE
-          dotnet pack hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj --configuration Release --output ./nupkgs $LINE
-          dotnet pack hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj --configuration Release --output ./nupkgs $LINE
 
       - name: Verify installed packages and NativeAOT consumers
         env:

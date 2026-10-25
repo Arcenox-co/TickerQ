@@ -20,8 +20,6 @@ COMMERCIAL_PACKAGE_IDS = {
     "TickerQ.SourceGenerator",
     "TickerQ.MongoDB",
     "TickerQ.Integrations",
-    "TickerQ.SDK",
-    "TickerQ.RemoteExecutor",
 }
 EXPECTED_PACKAGE_IDS = COMMERCIAL_PACKAGE_IDS
 EXPECTED_PACKAGE_IDS_BY_FOLD = {

@@ -121,12 +121,6 @@ jobs:
           dotnet build tests/TickerQ.MongoDB.Tests/TickerQ.MongoDB.Tests.csproj --configuration Release $LINE
           dotnet build tests/TickerQ.SourceGenerator.Tests/TickerQ.SourceGenerator.Tests.csproj --configuration Release $LINE
 
-      # The hub SDK and remote executor are released for every .NET line, like the other packages.
-      - name: Build hub projects
-        run: |
-          dotnet build hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj --configuration Release $LINE
-          dotnet build hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj --configuration Release $LINE
-
       - name: Docker info preflight
         run: docker info
 

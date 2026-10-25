@@ -234,8 +234,6 @@ jobs:
             TickerQ.SourceGenerator
             TickerQ.MongoDB
             TickerQ.Integrations
-            TickerQ.SDK
-            TickerQ.RemoteExecutor
           )
 
           for line in 8 9 10 11; do
