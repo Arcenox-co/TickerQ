@@ -54,6 +54,39 @@ public sealed class ManagerCancellationTests
     }
 
     [Theory]
+    [InlineData(true, 1)]
+    [InlineData(false, 0)]
+    public async Task Cancelling_a_finished_root_reaches_its_chain_only_while_the_chain_lease_is_held(
+        bool chainActive, int expected)
+    {
+        var id = Guid.NewGuid();
+        var persistence = Substitute.For<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>();
+        persistence.SupportsClusterControl.Returns(true);
+        persistence.GetExecutionOwnershipAsync(TickerType.TimeTicker, id, Arg.Any<CancellationToken>())
+            .Returns(new TickerQ.Utilities.Cluster.TickerQExecutionOwnership
+            {
+                Type = TickerType.TimeTicker, TickerId = id, ExecutionOwnerId = "worker-b:1:instance",
+                AcquisitionToken = Guid.NewGuid(), Status = TickerStatus.Done, ChainActive = chainActive
+            });
+        persistence.RequestCancellationAsync(Arg.Any<TickerQ.Utilities.Cluster.TickerQControlCommand>(),
+            Arg.Any<CancellationToken>()).Returns(true);
+        var partition = new TickerQRuntimePartition("chain-cancellation");
+        var options = new SchedulerOptionsBuilder();
+        options.BindRuntimeActivationScope(partition.ApplicationNamespace, 1, true);
+        var manager = new TickerManager<TimeTickerEntity, CronTickerEntity>(
+            persistence, Substitute.For<ITickerQHostScheduler>(), Substitute.For<ITickerClock>(),
+            Substitute.For<ITickerQNotificationHubSender>(),
+            new TickerExecutionContext { RuntimePartition = partition },
+            Substitute.For<ITickerQDispatcher>(), options, new TickerQActivationGate());
+
+        var result = await ((ITimeTickerManager<TimeTickerEntity>)manager).RequestCancellationAsync(id);
+
+        Assert.Equal(expected, result.AffectedRows);
+        await persistence.Received(expected).RequestCancellationAsync(
+            Arg.Any<TickerQ.Utilities.Cluster.TickerQControlCommand>(), Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
     [InlineData(TickerType.TimeTicker, false)] [InlineData(TickerType.CronTickerOccurrence, false)]
     [InlineData(TickerType.TimeTicker, true)] [InlineData(TickerType.CronTickerOccurrence, true)]
     public async Task Cancellation_is_scoped_to_type_and_partition_and_only_signals_the_execution(TickerType target, bool callbackFails)

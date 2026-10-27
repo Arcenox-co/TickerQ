@@ -21,8 +21,15 @@ namespace TickerQ.MongoDB.Infrastructure
             var defs = Builders<TTimeTicker>.Update;
             UpdateDefinition<TTimeTicker> u = null;
 
+            // Every terminal transition clears the lease, except a chain root's: its lease stays as
+            // the chain's ownership record until the tree finishes (see
+            // InternalFunctionContext.RetainsChainLease). A lock release always clears it.
             if (ClearsAcquisitionToken(props, ctx))
-                u = Combine(u, defs.Set(x => x.LeaseUntil, (DateTime?)null));
+                u = Combine(u, defs.Set(x => x.LeaseUntil,
+                    ctx.ParentId == null && ctx.RetainsChainLease &&
+                    !props.Contains(nameof(InternalFunctionContext.ReleaseLock))
+                        ? leaseUntil
+                        : null));
             else if (ctx.ParentId == null && leaseUntil != null &&
                      props.Contains(nameof(InternalFunctionContext.Status)) &&
                      ctx.Status == TickerStatus.InProgress)

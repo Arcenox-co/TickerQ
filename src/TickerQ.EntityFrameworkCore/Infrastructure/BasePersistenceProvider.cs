@@ -3190,11 +3190,17 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             if (!lease.AcquisitionToken.HasValue)
                 continue;
 
+            // A terminal root holding its chain lease is renewed under its chain generation.
             renewed += await dbContext.Set<TTimeTicker>()
                 .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                             x.Id == lease.TickerId && x.LockHolder == _lockHolder &&
-                            x.Status == TickerStatus.InProgress &&
-                            x.AcquisitionToken == lease.AcquisitionToken)
+                            ((x.Status == TickerStatus.InProgress &&
+                              x.AcquisitionToken == lease.AcquisitionToken) ||
+                             (x.ParentId == null && x.LeaseUntil != null &&
+                              x.ChainGeneration == lease.AcquisitionToken &&
+                              (x.Status == TickerStatus.Done || x.Status == TickerStatus.DueDone ||
+                               x.Status == TickerStatus.Failed || x.Status == TickerStatus.Cancelled ||
+                               x.Status == TickerStatus.Skipped))))
                 .ExecuteUpdateAsync(setter => setter.SetProperty(x => x.LeaseUntil, leaseUntil), cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -3242,10 +3248,16 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         {
             if (!lease.AcquisitionToken.HasValue)
                 continue;
+            // A root this node finished under the same generation is still its own, not lost:
+            // its chain may still be running, and nothing else can own that generation.
             if (await dbContext.Set<TTimeTicker>().AsNoTracking().ExistsAsync(
                     x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                          x.Id == lease.TickerId && x.LockHolder == _lockHolder &&
-                         x.Status == TickerStatus.InProgress && x.AcquisitionToken == lease.AcquisitionToken,
+                         ((x.Status == TickerStatus.InProgress && x.AcquisitionToken == lease.AcquisitionToken) ||
+                          (x.ParentId == null && x.ChainGeneration == lease.AcquisitionToken &&
+                           (x.Status == TickerStatus.Done || x.Status == TickerStatus.DueDone ||
+                            x.Status == TickerStatus.Failed || x.Status == TickerStatus.Cancelled ||
+                            x.Status == TickerStatus.Skipped))),
                     cancellationToken).ConfigureAwait(false))
                 held.Add(lease.TickerId);
         }
@@ -3296,6 +3308,78 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         }
 
         return held.ToArray();
+    }
+
+    public async Task<int> ReleaseChainLeaseAsync(AcquisitionLease rootLease, CancellationToken cancellationToken = default)
+    {
+        if (!rootLease.AcquisitionToken.HasValue)
+            return 0;
+
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var now = _clock.UtcNow;
+        return await session.Context.Set<TTimeTicker>()
+            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                        x.Id == rootLease.TickerId && x.ParentId == null && x.LockHolder == _lockHolder &&
+                        x.LeaseUntil != null && x.ChainGeneration == rootLease.AcquisitionToken &&
+                        (x.Status == TickerStatus.Done || x.Status == TickerStatus.DueDone ||
+                         x.Status == TickerStatus.Failed || x.Status == TickerStatus.Cancelled ||
+                         x.Status == TickerStatus.Skipped))
+            .ExecuteUpdateAsync(setter => setter
+                .SetProperty(x => x.LeaseUntil, (DateTime?)null)
+                .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// A terminal root whose chain lease expired belongs to a node that died mid-chain. Clearing the
+    /// root's generation fences any late write from that node; the descendants it left InProgress
+    /// are then cancelled. Steps that never started keep their status, as for a cancelled root.
+    /// </summary>
+    private async Task<int> RecoverDeadChainsAsync(
+        TDbContext dbContext, DateTime now, string staleReason, CancellationToken cancellationToken)
+    {
+        var set = dbContext.Set<TTimeTicker>();
+        var chains = await set.AsNoTracking()
+            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ParentId == null &&
+                        x.LeaseUntil != null && x.LeaseUntil < now && x.ChainGeneration != null &&
+                        (x.Status == TickerStatus.Done || x.Status == TickerStatus.DueDone ||
+                         x.Status == TickerStatus.Failed || x.Status == TickerStatus.Cancelled ||
+                         x.Status == TickerStatus.Skipped))
+            .Select(x => new { x.Id, Generation = x.ChainGeneration.Value })
+            .Take(100)
+            .ToArrayAsync(cancellationToken).ConfigureAwait(false);
+
+        var cancelled = 0;
+        foreach (var chain in chains)
+        {
+            // Root first, matching the lock order of child mutations.
+            var fenced = await set
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == chain.Id &&
+                            x.ParentId == null && x.ChainGeneration == chain.Generation &&
+                            x.LeaseUntil != null && x.LeaseUntil < now)
+                .ExecuteUpdateAsync(setter => setter
+                    .SetProperty(x => x.LeaseUntil, (DateTime?)null)
+                    .SetProperty(x => x.ChainGeneration, (Guid?)null)
+                    .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+                .ConfigureAwait(false);
+            if (fenced == 0)
+                continue;
+
+            cancelled += await set
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ParentId != null &&
+                            x.ChainRootId == chain.Id && x.ChainGeneration == chain.Generation &&
+                            x.Status == TickerStatus.InProgress)
+                .ExecuteUpdateAsync(setter => setter
+                    .SetProperty(x => x.Status, TickerStatus.Cancelled)
+                    .SetProperty(x => x.ExceptionMessage, staleReason)
+                    .SetProperty(x => x.ExecutedAt, now)
+                    .SetProperty(x => x.LeaseUntil, (DateTime?)null)
+                    .SetProperty(x => x.AcquisitionToken, (Guid?)null)
+                    .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return cancelled;
     }
 
     public async Task<StaleTickerRecoveryResult> RecoverStaleTickers(int maxStaleRestarts, CancellationToken cancellationToken = default)
@@ -3450,6 +3534,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             .ConfigureAwait(false);
         }
 
+            result.CancelledTimeTickers += await RecoverDeadChainsAsync(dbContext, now, staleReason, ct)
+                .ConfigureAwait(false);
             return result;
         }, cancellationToken).ConfigureAwait(false);
     }

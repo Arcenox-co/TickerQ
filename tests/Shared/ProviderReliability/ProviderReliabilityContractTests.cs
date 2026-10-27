@@ -758,6 +758,156 @@ public abstract class ProviderReliabilityContractTests
     }
 
     // ---------------------------------------------------------------------
+    // 11. Chain lease: a root whose descendants outlive its own terminal write
+    //     keeps owning the chain until the tree releases it.
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public async Task ChainLease_TerminalRootKeepsLease_RenewedUnderItsGenerationUntilReleased()
+    {
+        var (root, child, _, generation) = await StartChainWithFinishedRootAsync();
+
+        var persisted = await Provider.GetTimeTickerById(root.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.Done, persisted!.Status);
+        Assert.Equal(OwnerId, persisted.LockHolder);
+        Assert.Equal(generation, persisted.ChainGeneration);
+        Assert.Null(persisted.AcquisitionToken);
+        Assert.Equal(Now.Add(LeaseDuration), persisted.LeaseUntil);
+
+        var lease = new AcquisitionLease(root.Id, generation);
+        var otherGeneration = new AcquisitionLease(root.Id, Guid.NewGuid());
+        Assert.Equal(1, await Provider.RenewTimeTickerLeases([lease], Now.AddMinutes(2), CancellationToken.None));
+        Assert.Equal(Now.AddMinutes(2), (await Provider.GetTimeTickerById(root.Id, CancellationToken.None))!.LeaseUntil);
+        Assert.Equal(0, await Provider.RenewTimeTickerLeases([otherGeneration], Now.AddMinutes(3), CancellationToken.None));
+        Assert.Equal([root.Id], await Provider.GetStillHeldTickerIds([lease], [], CancellationToken.None));
+        Assert.Empty(await Provider.GetStillHeldTickerIds([otherGeneration], [], CancellationToken.None));
+
+        Assert.Equal(0, await Provider.ReleaseChainLeaseAsync(otherGeneration, CancellationToken.None));
+        Assert.Equal(1, await Provider.ReleaseChainLeaseAsync(lease, CancellationToken.None));
+        Assert.Null((await Provider.GetTimeTickerById(root.Id, CancellationToken.None))!.LeaseUntil);
+        // Released: nothing left to renew, but the finished root is still this node's own.
+        Assert.Equal(0, await Provider.RenewTimeTickerLeases([lease], Now.AddMinutes(2), CancellationToken.None));
+        Assert.Equal([root.Id], await Provider.GetStillHeldTickerIds([lease], [], CancellationToken.None));
+        Assert.Equal(TickerStatus.InProgress, (await Provider.GetTimeTickerById(child.Id, CancellationToken.None))!.Status);
+    }
+
+    [Fact]
+    public async Task ChainLease_LeafRootTerminalWrite_ClearsLease_ButStaysHeldByItsGeneration()
+    {
+        var ticker = NewTimeTicker();
+        await Provider.AddTimeTickers([ticker], CancellationToken.None);
+        Assert.Single(await Provider.AcquireImmediateTimeTickersAsync([ticker.Id], CancellationToken.None));
+        var lease = await LeaseFor(ticker.Id);
+
+        Assert.Equal(1, await Provider.UpdateTimeTicker(RootTerminal(ticker.Id, lease.AcquisitionToken!.Value, retainsChainLease: false),
+            CancellationToken.None));
+
+        var persisted = await Provider.GetTimeTickerById(ticker.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.Done, persisted!.Status);
+        Assert.Null(persisted.LeaseUntil);
+        Assert.Equal(0, await Provider.RenewTimeTickerLeases([lease], Now.AddMinutes(2), CancellationToken.None));
+        // Finished by this node under the same generation: not a lost lease.
+        Assert.Equal([ticker.Id], await Provider.GetStillHeldTickerIds([lease], [], CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RecoverStaleTickers_ExpiredChainLease_FencesGenerationAndCancelsRunningDescendants()
+    {
+        var (deadRoot, deadChild, deadPending, deadGeneration) = await StartChainWithFinishedRootAsync();
+        var (liveRoot, liveChild, _, liveGeneration) = await StartChainWithFinishedRootAsync();
+        // The dead node stops renewing: its chain lease runs out.
+        Assert.Equal(1, await Provider.RenewTimeTickerLeases(
+            [new AcquisitionLease(deadRoot.Id, deadGeneration)], Now.AddSeconds(-1), CancellationToken.None));
+
+        var result = await Provider.RecoverStaleTickers(maxStaleRestarts: 2, CancellationToken.None);
+
+        Assert.Equal(1, result.CancelledTimeTickers);
+        var cancelled = await Provider.GetTimeTickerById(deadChild.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.Cancelled, cancelled!.Status);
+        Assert.NotNull(cancelled.ExceptionMessage);
+        Assert.Equal(TickerStatus.Idle, (await Provider.GetTimeTickerById(deadPending.Id, CancellationToken.None))!.Status);
+        var fencedRoot = await Provider.GetTimeTickerById(deadRoot.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.Done, fencedRoot!.Status);
+        Assert.Null(fencedRoot.LeaseUntil);
+        Assert.Null(fencedRoot.ChainGeneration);
+
+        // A late write from the dead node no longer lands, and its lease is reported lost.
+        Assert.Equal(0, await Provider.UpdateTimeTicker(ChildWrite(deadChild, deadRoot.Id, deadGeneration, TickerStatus.Done),
+            CancellationToken.None));
+        Assert.Equal(TickerStatus.Cancelled, (await Provider.GetTimeTickerById(deadChild.Id, CancellationToken.None))!.Status);
+        Assert.Empty(await Provider.GetStillHeldTickerIds(
+            [new AcquisitionLease(deadRoot.Id, deadGeneration)], [], CancellationToken.None));
+
+        // A chain whose lease is still live is untouched.
+        Assert.Equal(TickerStatus.InProgress, (await Provider.GetTimeTickerById(liveChild.Id, CancellationToken.None))!.Status);
+        Assert.Equal(liveGeneration, (await Provider.GetTimeTickerById(liveRoot.Id, CancellationToken.None))!.ChainGeneration);
+    }
+
+    [Fact]
+    public async Task ExecutionOwnership_ChainStepsResolveThroughTheRootsChainLease()
+    {
+        var (root, child, _, generation) = await StartChainWithFinishedRootAsync();
+
+        var childOwner = await Provider.GetExecutionOwnershipAsync(TickerType.TimeTicker, child.Id, CancellationToken.None);
+        Assert.NotNull(childOwner);
+        Assert.Equal(OwnerId, childOwner!.ExecutionOwnerId);
+        Assert.Equal(generation, childOwner.AcquisitionToken);
+        Assert.Equal(TickerStatus.InProgress, childOwner.Status);
+        Assert.True(childOwner.IsCancellable);
+
+        var rootOwner = await Provider.GetExecutionOwnershipAsync(TickerType.TimeTicker, root.Id, CancellationToken.None);
+        Assert.NotNull(rootOwner);
+        Assert.True(rootOwner!.ChainActive);
+        Assert.True(rootOwner.IsCancellable);
+        Assert.Equal(generation, rootOwner.AcquisitionToken);
+
+        Assert.Equal(1, await Provider.ReleaseChainLeaseAsync(new AcquisitionLease(root.Id, generation), CancellationToken.None));
+        Assert.False((await Provider.GetExecutionOwnershipAsync(TickerType.TimeTicker, root.Id, CancellationToken.None))!.IsCancellable);
+        Assert.Null(await Provider.GetExecutionOwnershipAsync(TickerType.TimeTicker, child.Id, CancellationToken.None));
+    }
+
+    /// <summary>
+    /// Acquires root → (running, pending) and writes the root's own terminal outcome while the
+    /// running child is still InProgress — the state a chain is in after its root step finished.
+    /// </summary>
+    private async Task<(TimeTickerEntity Root, TimeTickerEntity Running, TimeTickerEntity Pending, Guid Generation)>
+        StartChainWithFinishedRootAsync()
+    {
+        var root = NewTimeTicker();
+        var running = NewChildDefinition();
+        var pending = NewChildDefinition();
+        running.ParentId = root.Id;
+        pending.ParentId = root.Id;
+        root.Children = [running, pending];
+        await Provider.AddTimeTickers([root], CancellationToken.None);
+        Assert.Single(await Provider.AcquireImmediateTimeTickersAsync([root.Id], CancellationToken.None));
+        var generation = (await LeaseFor(root.Id)).AcquisitionToken!.Value;
+
+        Assert.Equal(1, await Provider.UpdateTimeTicker(ChildWrite(running, root.Id, generation, TickerStatus.InProgress),
+            CancellationToken.None));
+        Assert.Equal(1, await Provider.UpdateTimeTicker(RootTerminal(root.Id, generation, retainsChainLease: true),
+            CancellationToken.None));
+        return (root, running, pending, generation);
+    }
+
+    private static InternalFunctionContext RootTerminal(Guid rootId, Guid generation, bool retainsChainLease)
+        => new InternalFunctionContext
+            {
+                TickerId = rootId, Type = TickerType.TimeTicker, ChainRootId = rootId,
+                ChainGeneration = generation, RetainsChainLease = retainsChainLease
+            }
+            .SetProperty(x => x.AcquisitionToken, generation)
+            .SetProperty(x => x.Status, TickerStatus.Done);
+
+    private static InternalFunctionContext ChildWrite(TimeTickerEntity child, Guid rootId, Guid generation, TickerStatus status)
+        => new InternalFunctionContext
+            {
+                TickerId = child.Id, Type = TickerType.TimeTicker, ParentId = rootId, ChainRootId = rootId,
+                ChainGeneration = generation, AcquisitionToken = generation
+            }
+            .SetProperty(x => x.Status, status);
+
+    // ---------------------------------------------------------------------
     // Capability — reliability providers must advertise lease-based recovery.
     // ---------------------------------------------------------------------
 

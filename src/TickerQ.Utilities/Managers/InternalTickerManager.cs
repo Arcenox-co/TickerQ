@@ -658,7 +658,10 @@ namespace TickerQ.Utilities.Managers
                 affected = await _persistenceProvider.UpdateTimeTicker(functionContext, cancellationToken).ConfigureAwait(false);
                 // Ownership and aggregate-generation fencing lives in the provider. Never notify or
                 // release descendants after a rejected child/result mutation.
-                if (affected == 0 && (publishesResult || functionContext.ParentId != null))
+                // A chain root's rejected terminal write must not release descendants either: its
+                // generation now belongs to another owner, which runs the chain itself.
+                if (affected == 0 && (publishesResult || functionContext.ParentId != null ||
+                                      (terminal && functionContext.RetainsChainLease)))
                 {
                     // A cancellation also wins over the parent's later condition-based skip.
                     // It is already terminal; do not relabel it or fail the rest of the chain.
@@ -970,6 +973,15 @@ namespace TickerQ.Utilities.Managers
                 renewed += await _persistenceProvider.RenewCronTickerOccurrenceLeases(occurrenceLeases, leaseUntil, cancellationToken).ConfigureAwait(false);
 
             return renewed;
+        }
+
+        public Task ReleaseChainLeaseAsync(InternalFunctionContext root, CancellationToken cancellationToken = default)
+        {
+            EnsureExactRuntimePartition(root);
+            var generation = root.ChainGeneration ?? root.AcquisitionToken;
+            return generation.HasValue
+                ? _persistenceProvider.ReleaseChainLeaseAsync(new AcquisitionLease(root.TickerId, generation), cancellationToken)
+                : Task.CompletedTask;
         }
 
         public async Task<TickerExecutionLease[]> GetLostLeaseTickerIdsAsync(

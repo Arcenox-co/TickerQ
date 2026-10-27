@@ -96,6 +96,11 @@ namespace TickerQ.Utilities.Interfaces.Managers
         /// Generation-aware lost-lease detection preserving the persistence namespace for each row.
         /// </summary>
         Task<TickerExecutionLease[]> GetLostLeaseTickerIdsAsync(IReadOnlyCollection<AcquisitionLease> timeTickerLeases, IReadOnlyCollection<AcquisitionLease> occurrenceLeases, CancellationToken cancellationToken = default);
+        /// <summary>
+        /// Releases the chain lease a terminal root kept for its descendants once the whole tree
+        /// has finished (see <see cref="InternalFunctionContext.RetainsChainLease"/>).
+        /// </summary>
+        Task ReleaseChainLeaseAsync(InternalFunctionContext root, CancellationToken cancellationToken = default);
         /// <summary>One watchdog sweep: applies OnStale to expired-lease InProgress tickers.</summary>
         Task<StaleTickerRecoveryResult> RecoverStaleTickersAsync(CancellationToken cancellationToken = default);
 

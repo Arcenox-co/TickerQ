@@ -8,6 +8,7 @@ using TickerQ.EntityFrameworkCore.Entities;
 using TickerQ.Utilities.Cluster;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Infrastructure;
 
 namespace TickerQ.EntityFrameworkCore.Infrastructure;
 
@@ -71,13 +72,38 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         {
             var row = await session.Context.Set<TTimeTicker>().AsNoTracking()
                 .Where(x => x.Id == tickerId)
-                .Select(x => new { x.LockHolder, x.AcquisitionToken, x.ChainGeneration, x.ParentId, x.Status })
+                .Select(x => new { x.LockHolder, x.AcquisitionToken, x.ChainGeneration, x.ParentId, x.ChainRootId, x.LeaseUntil, x.Status })
                 .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-            return row == null || string.IsNullOrWhiteSpace(row.LockHolder) ? null : new TickerQExecutionOwnership
+            if (row == null)
+                return null;
+            if (row.ParentId.HasValue)
+            {
+                // Chain steps carry no lock of their own: the root's chain lease names their owner.
+                if (!row.ChainRootId.HasValue || !row.ChainGeneration.HasValue)
+                    return null;
+                var root = await session.Context.Set<TTimeTicker>().AsNoTracking()
+                    .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == row.ChainRootId.Value &&
+                                x.ParentId == null && x.ChainGeneration == row.ChainGeneration)
+                    .Select(x => new { x.LockHolder, x.LeaseUntil, x.Status })
+                    .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                return root == null || string.IsNullOrWhiteSpace(root.LockHolder) ||
+                       (root.Status != TickerStatus.InProgress && root.LeaseUntil == null)
+                    ? null
+                    : new TickerQExecutionOwnership
+                    {
+                        Type = type, TickerId = tickerId, ExecutionOwnerId = root.LockHolder,
+                        AcquisitionToken = row.ChainGeneration, Status = row.Status
+                    };
+            }
+            if (string.IsNullOrWhiteSpace(row.LockHolder))
+                return null;
+            var chainActive = row.LeaseUntil != null && row.ChainGeneration.HasValue &&
+                              ChainDeletionPolicy.IsTerminal(row.Status);
+            return new TickerQExecutionOwnership
             {
                 Type = type, TickerId = tickerId, ExecutionOwnerId = row.LockHolder,
-                AcquisitionToken = row.ParentId.HasValue ? row.ChainGeneration : row.AcquisitionToken,
-                Status = row.Status
+                AcquisitionToken = chainActive ? row.ChainGeneration : row.AcquisitionToken,
+                Status = row.Status, ChainActive = chainActive
             };
         }
 

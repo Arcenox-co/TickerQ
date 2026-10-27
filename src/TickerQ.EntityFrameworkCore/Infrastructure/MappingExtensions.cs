@@ -285,10 +285,13 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var propsToUpdate = functionContext.GetPropsToUpdate();
 
             // Chain children execute under the root aggregate lease and must never mint an
-            // independently recoverable lease. Every terminal transition clears legacy leases.
+            // independently recoverable lease. Every terminal transition clears legacy leases,
+            // except a chain root's: its lease stays as the chain's ownership record until the
+            // tree finishes (see InternalFunctionContext.RetainsChainLease).
             if (WritesTerminalStatus(functionContext, propsToUpdate))
             {
-                setters.SetProperty(x => x.LeaseUntil, (DateTime?)null);
+                setters.SetProperty(x => x.LeaseUntil,
+                    functionContext.ParentId == null && functionContext.RetainsChainLease ? leaseUntil : null);
             }
             else if (functionContext.ParentId == null && leaseUntil != null &&
                      propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&

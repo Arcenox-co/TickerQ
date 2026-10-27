@@ -9,6 +9,7 @@ using MongoDB.Driver.Core.Servers;
 using TickerQ.Utilities.Cluster;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Infrastructure;
 
 namespace TickerQ.MongoDB.Infrastructure;
 
@@ -42,11 +43,39 @@ internal sealed partial class TickerMongoPersistenceProvider<TTimeTicker, TCronT
         {
             var row = await _context.TimeTickers.Find(x => x.Id == tickerId)
                 .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-            return row == null || string.IsNullOrWhiteSpace(row.LockHolder) ? null : new TickerQExecutionOwnership
+            if (row == null)
+                return null;
+            if (row.ParentId.HasValue)
+            {
+                // Chain steps carry no lock of their own: the root's chain lease names their owner.
+                if (!row.ChainRootId.HasValue || !row.ChainGeneration.HasValue)
+                    return null;
+                var fb = Builders<TTimeTicker>.Filter;
+                var root = await _context.TimeTickers.Find(fb.And(
+                        fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
+                        fb.Eq(x => x.Id, row.ChainRootId.Value),
+                        fb.Eq(x => x.ParentId, (Guid?)null),
+                        fb.Eq(x => x.ChainGeneration, row.ChainGeneration)))
+                    .Project(x => new { x.LockHolder, x.LeaseUntil, x.Status })
+                    .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                return root == null || string.IsNullOrWhiteSpace(root.LockHolder) ||
+                       (root.Status != TickerStatus.InProgress && root.LeaseUntil == null)
+                    ? null
+                    : new TickerQExecutionOwnership
+                    {
+                        Type = type, TickerId = tickerId, ExecutionOwnerId = root.LockHolder,
+                        AcquisitionToken = row.ChainGeneration, Status = row.Status
+                    };
+            }
+            if (string.IsNullOrWhiteSpace(row.LockHolder))
+                return null;
+            var chainActive = row.LeaseUntil != null && row.ChainGeneration.HasValue &&
+                              ChainDeletionPolicy.IsTerminal(row.Status);
+            return new TickerQExecutionOwnership
             {
                 Type = type, TickerId = tickerId, ExecutionOwnerId = row.LockHolder,
-                AcquisitionToken = row.ParentId.HasValue ? row.ChainGeneration : row.AcquisitionToken,
-                Status = row.Status
+                AcquisitionToken = chainActive ? row.ChainGeneration : row.AcquisitionToken,
+                Status = row.Status, ChainActive = chainActive
             };
         }
         var occurrence = await _context.CronTickerOccurrences.Find(x => x.Id == tickerId)

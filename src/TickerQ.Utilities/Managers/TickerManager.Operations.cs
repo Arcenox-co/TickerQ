@@ -135,8 +135,7 @@ internal partial class TickerManager<TTimeTicker, TCronTicker>
         {
             var owner = await _persistenceProvider.GetExecutionOwnershipAsync(type, id, cancellationToken)
                 .ConfigureAwait(false);
-            if (owner != null && owner.Status is TickerStatus.Queued or TickerStatus.InProgress
-                && !string.IsNullOrWhiteSpace(owner.ExecutionOwnerId))
+            if (owner != null && owner.IsCancellable && !string.IsNullOrWhiteSpace(owner.ExecutionOwnerId))
             {
                 var now = _clock.UtcNow;
                 signalled = await _persistenceProvider.RequestCancellationAsync(new TickerQControlCommand

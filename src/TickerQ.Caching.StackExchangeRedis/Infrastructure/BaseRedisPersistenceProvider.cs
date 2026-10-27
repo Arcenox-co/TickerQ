@@ -13,6 +13,7 @@ using static TickerQ.Caching.StackExchangeRedis.Helpers.RedisKeyBuilder;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
 
@@ -107,6 +108,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     private static readonly string RenewLeaseScript = LuaScriptLoader.Load("RenewLease");
     private static readonly string CheckLeaseScript = LuaScriptLoader.Load("CheckLease");
     private static readonly string RecoverStaleScript = LuaScriptLoader.Load("RecoverStale");
+    private static readonly string ReleaseChainLeaseScript = LuaScriptLoader.Load("ReleaseChainLease");
+    private static readonly string RecoverDeadChainScript = LuaScriptLoader.Load("RecoverDeadChain");
     private static readonly string AcquireOnDemandScript = LuaScriptLoader.Load("AcquireOnDemand");
     private static readonly string ClaimNodeFinalizationsScript = LuaScriptLoader.Load("ClaimNodeFinalizations");
     private static readonly string DiscardClaimedNodeFinalizationScript = LuaScriptLoader.Load("DiscardClaimedNodeFinalization");
@@ -838,6 +841,18 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             context.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                 or TickerStatus.Cancelled or TickerStatus.Skipped);
 
+    private static bool RetainsChainLease(InternalFunctionContext context)
+        => context.ParentId == null && context.RetainsChainLease &&
+           !context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ReleaseLock)) &&
+           context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+           ChainDeletionPolicy.IsTerminal(context.Status);
+
+    private static readonly RedisValue[] LuaTerminalStatuses =
+    [
+        (int)TickerStatus.Done, (int)TickerStatus.DueDone, (int)TickerStatus.Failed,
+        (int)TickerStatus.Cancelled, (int)TickerStatus.Skipped
+    ];
+
     private static bool IsProgressWrite(InternalFunctionContext context)
         => context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ProgressPercent));
 
@@ -1227,7 +1242,9 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         }
         if (IsFencedTerminalWrite(context))
         {
-            ticker.LeaseUntil = null;
+            // A chain root keeps its lease as the chain's ownership record until the tree
+            // finishes (see InternalFunctionContext.RetainsChainLease). A lock release clears it.
+            ticker.LeaseUntil = RetainsChainLease(context) ? NextLeaseUntil(Clock.UtcNow) : null;
             ticker.AcquisitionToken = null;
             if (context.IsChainRetryRoot && context.ParentId == null)
             {
@@ -2581,14 +2598,15 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         return await RenewCronTickerOccurrenceLeases(rows.Select(x => new AcquisitionLease(x.Id, x.AcquisitionToken)).ToArray(), leaseUntil, cancellationToken).ConfigureAwait(false);
     }
 
+    // A terminal time-ticker root holding its chain lease is renewed under its chain generation.
     public Task<int> RenewTimeTickerLeases(IReadOnlyCollection<AcquisitionLease> leases, DateTime leaseUntil, CancellationToken cancellationToken = default)
-        => RenewLeasesAsync(leases, TimeTickerKey, leaseUntil, cancellationToken);
+        => RenewLeasesAsync(leases, TimeTickerKey, leaseUntil, chainLease: true, cancellationToken);
 
     public Task<int> RenewCronTickerOccurrenceLeases(IReadOnlyCollection<AcquisitionLease> leases, DateTime leaseUntil, CancellationToken cancellationToken = default)
-        => RenewLeasesAsync(leases, CronOccurrenceKey, leaseUntil, cancellationToken);
+        => RenewLeasesAsync(leases, CronOccurrenceKey, leaseUntil, chainLease: false, cancellationToken);
 
     private async Task<int> RenewLeasesAsync(IReadOnlyCollection<AcquisitionLease> leases, Func<Guid, string> keyBuilder,
-        DateTime leaseUntil, CancellationToken cancellationToken)
+        DateTime leaseUntil, bool chainLease, CancellationToken cancellationToken)
     {
         var renewed = 0;
         foreach (var lease in leases ?? Array.Empty<AcquisitionLease>())
@@ -2597,7 +2615,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             if (lease.AcquisitionToken is not Guid token) continue;
             var result = await Db.ScriptEvaluateAsync(RenewLeaseScript, [(RedisKey)keyBuilder(lease.TickerId)],
                 [(RedisValue)LockHolder, (RedisValue)token.ToString(), LuaStatusInProgress,
-                 (RedisValue)leaseUntil.ToUniversalTime().ToString("O")]).ConfigureAwait(false);
+                 (RedisValue)leaseUntil.ToUniversalTime().ToString("O"), (RedisValue)(chainLease ? "1" : "0"),
+                 ..LuaTerminalStatuses]).ConfigureAwait(false);
             if ((long)result == 1) renewed++;
         }
         return renewed;
@@ -2616,33 +2635,75 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         IReadOnlyCollection<AcquisitionLease> occurrenceLeases, CancellationToken cancellationToken = default)
     {
         var held = new List<Guid>();
-        await AddHeldAsync(timeTickerLeases, TimeTickerKey, held, cancellationToken).ConfigureAwait(false);
-        await AddHeldAsync(occurrenceLeases, CronOccurrenceKey, held, cancellationToken).ConfigureAwait(false);
+        // A root this node finished under the same chain generation is still its own, not lost.
+        await AddHeldAsync(timeTickerLeases, TimeTickerKey, chainLease: true, held, cancellationToken).ConfigureAwait(false);
+        await AddHeldAsync(occurrenceLeases, CronOccurrenceKey, chainLease: false, held, cancellationToken).ConfigureAwait(false);
         return held.ToArray();
     }
 
     private async Task AddHeldAsync(IReadOnlyCollection<AcquisitionLease> leases, Func<Guid, string> keyBuilder,
-        List<Guid> held, CancellationToken cancellationToken)
+        bool chainLease, List<Guid> held, CancellationToken cancellationToken)
     {
         foreach (var lease in leases ?? Array.Empty<AcquisitionLease>())
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (lease.AcquisitionToken is not Guid token) continue;
             var result = await Db.ScriptEvaluateAsync(CheckLeaseScript, [(RedisKey)keyBuilder(lease.TickerId)],
-                [(RedisValue)LockHolder, (RedisValue)token.ToString(), LuaStatusInProgress]).ConfigureAwait(false);
+                [(RedisValue)LockHolder, (RedisValue)token.ToString(), LuaStatusInProgress,
+                 (RedisValue)(chainLease ? "1" : "0"), ..LuaTerminalStatuses]).ConfigureAwait(false);
             if ((long)result == 1) held.Add(lease.TickerId);
         }
+    }
+
+    public async Task<int> ReleaseChainLeaseAsync(AcquisitionLease rootLease, CancellationToken cancellationToken = default)
+    {
+        if (rootLease.AcquisitionToken is not Guid generation)
+            return 0;
+
+        for (var attempt = 0; attempt < 64; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var root = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(rootLease.TickerId)).ConfigureAwait(false);
+            if (root == null || root.ParentId != null || root.LockHolder != LockHolder ||
+                root.LeaseUntil == null || root.ChainGeneration != generation ||
+                !ChainDeletionPolicy.IsTerminal(root.Status))
+                return 0;
+
+            var result = await Db.ScriptEvaluateAsync(ReleaseChainLeaseScript,
+                [(RedisKey)TimeTickerKey(root.Id)],
+                [(RedisValue)LockHolder, (RedisValue)generation.ToString(),
+                 (RedisValue)root.UpdatedAt.ToString("O"),
+                 (RedisValue)NextAggregateUpdatedAt(root.UpdatedAt).ToString("O"),
+                 ..LuaTerminalStatuses]).ConfigureAwait(false);
+            if (result.IsNull) return 0;
+            var text = (string)result;
+            if (text == "retry") continue;
+
+            // The released root may now be a retention candidate.
+            var released = Serializer.DeserializeOrNull<TTimeTicker>(text);
+            if (released != null)
+                await IndexManager.AddTimeTickerIndexesAsync(released).ConfigureAwait(false);
+            return 1;
+        }
+
+        return 0;
     }
 
     public async Task<StaleTickerRecoveryResult> RecoverStaleTickers(int maxStaleRestarts, CancellationToken cancellationToken = default)
     {
         var result = new StaleTickerRecoveryResult();
         var timeIds = ParseGuidSet(await Db.SetMembersAsync(TimeTickerIdsKey).ConfigureAwait(false));
+        // Dead-chain candidates come from the same root scan: the expired-lease roots are not
+        // indexed separately (retention and pending indexes deliberately exclude leased rows).
+        var deadChainCutoff = Clock.UtcNow;
+        var deadChains = new List<TTimeTicker>();
         foreach (var id in timeIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var ticker = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
             if (ticker == null) continue;
+            if (deadChains.Count < MaxDeadChainsPerSweep && IsDeadChainCandidate(ticker, deadChainCutoff))
+                deadChains.Add(ticker);
             var code = await RecoverStaleAsync(TimeTickerKey(id), TimeTickerResultKey(id),
                 ticker.OnStale, maxStaleRestarts).ConfigureAwait(false);
             if (code.Entity is TTimeTicker updated) await IndexManager.AddTimeTickerIndexesAsync(updated).ConfigureAwait(false);
@@ -2673,7 +2734,60 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             if (code.Code == 'R') result.RestartedCronOccurrences++;
             else if (code.Code == 'C') result.CancelledCronOccurrences++;
         }
+
+        foreach (var chain in deadChains)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            result.CancelledTimeTickers += await RecoverDeadChainAsync(chain, cancellationToken).ConfigureAwait(false);
+        }
         return result;
+    }
+
+    private const int MaxDeadChainsPerSweep = 100;
+    private const string StaleReason = "Stale: the node executing this ticker stopped renewing its lease (presumed dead).";
+
+    private static bool IsDeadChainCandidate(TTimeTicker ticker, DateTime now)
+        => ticker.ParentId == null && ticker.ChainGeneration.HasValue &&
+           ticker.LeaseUntil is { } leaseUntil && leaseUntil < now &&
+           ChainDeletionPolicy.IsTerminal(ticker.Status);
+
+    /// <summary>
+    /// A terminal root whose chain lease expired belongs to a node that died mid-chain. One script
+    /// fences the root (lease and generation cleared, only while still expired under the observed
+    /// generation) and cancels the embedded descendants it left InProgress under that generation.
+    /// </summary>
+    private async Task<int> RecoverDeadChainAsync(TTimeTicker root, CancellationToken cancellationToken)
+    {
+        EnsureReconciliationActivationTopology();
+        var generation = root.ChainGeneration!.Value;
+        for (var attempt = 0; attempt < 8 && root != null; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var now = Clock.UtcNow;
+            if (!IsDeadChainCandidate(root, now) || root.ChainGeneration != generation) return 0;
+            var response = await Db.ScriptEvaluateAsync(RecoverDeadChainScript,
+                [(RedisKey)TimeTickerKey(root.Id), (RedisKey)ActivationMetadataKey],
+                [(RedisValue)now.ToString("O"), (RedisValue)generation.ToString(),
+                 (RedisValue)root.UpdatedAt.ToString("O"),
+                 (RedisValue)NextAggregateUpdatedAt(root.UpdatedAt).ToString("O"),
+                 LuaStatusInProgress, LuaStatusCancelled, (RedisValue)StaleReason,
+                 (RedisValue)RuntimeActivationEpoch, RuntimeAdmissionMode, ..LuaTerminalStatuses]).ConfigureAwait(false);
+            if (response.IsNull) return 0;
+            var text = (string)response;
+            if (text == "retry")
+            {
+                root = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(root.Id)).ConfigureAwait(false);
+                continue;
+            }
+
+            var separator = text.IndexOf('|');
+            var fenced = Serializer.DeserializeOrNull<TTimeTicker>(text[(separator + 1)..]);
+            if (fenced != null)
+                await IndexManager.AddTimeTickerIndexesAsync(fenced).ConfigureAwait(false);
+            return int.Parse(text[..separator], System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        return 0;
     }
 
     private Task<(char Code, object Entity)> RecoverStaleAsync(
@@ -2686,7 +2800,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         Func<string, object> deserialize, string authoritativeCronKey = null)
     {
         EnsureReconciliationActivationTopology();
-        const string staleReason = "Stale: the node executing this ticker stopped renewing its lease (presumed dead).";
+        const string staleReason = StaleReason;
         const string staleRevisionReason = "Quarantined because its Cron definition revision is stale.";
         var now = Clock.UtcNow;
         var keys = authoritativeCronKey == null

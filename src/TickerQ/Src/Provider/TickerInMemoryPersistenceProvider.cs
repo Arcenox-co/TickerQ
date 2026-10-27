@@ -983,6 +983,24 @@ namespace TickerQ.Provider
             }));
         }
 
+        public Task<int> ReleaseChainLeaseAsync(AcquisitionLease rootLease, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(WriteGraph(() =>
+            {
+                if (!rootLease.AcquisitionToken.HasValue ||
+                    !TimeTickers.TryGetValue(rootLease.TickerId, out var root) ||
+                    root.ParentId != null || root.LockHolder != _lockHolder || !root.LeaseUntil.HasValue ||
+                    root.ChainGeneration != rootLease.AcquisitionToken || !ChainDeletionPolicy.IsTerminal(root.Status))
+                    return 0;
+
+                var released = CloneTicker(root);
+                released.LeaseUntil = null;
+                released.UpdatedAt = _clock.UtcNow;
+                return TryUpdateTimeTicker(root.Id, released, root, requireRunnableActivation: false) ? 1 : 0;
+            }));
+        }
+
         public Task<bool> UpdateExecutionProgressAsync(
             TickerProgressUpdate update, CancellationToken cancellationToken = default)
         {
@@ -3339,7 +3357,12 @@ namespace TickerQ.Provider
 
             if (IsFencedTerminalWrite(context))
             {
-                ticker.LeaseUntil = null;
+                // A chain root keeps its lease as the chain's ownership record until the tree
+                // finishes (see InternalFunctionContext.RetainsChainLease).
+                ticker.LeaseUntil = context.ParentId == null && context.RetainsChainLease &&
+                                    !propsToUpdate.Contains(nameof(InternalFunctionContext.ReleaseLock))
+                    ? _clock.UtcNow.Add(_leaseDuration)
+                    : null;
                 ticker.AcquisitionToken = null;
                 if (context.IsChainRetryRoot && context.ParentId == null)
                 {

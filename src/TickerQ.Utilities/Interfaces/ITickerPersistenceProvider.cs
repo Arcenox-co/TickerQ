@@ -190,6 +190,16 @@ namespace TickerQ.Utilities.Interfaces
         Task<Guid[]> GetStillHeldTickerIds(IReadOnlyCollection<AcquisitionLease> timeTickerLeases, IReadOnlyCollection<AcquisitionLease> occurrenceLeases, CancellationToken cancellationToken = default)
             => Task.FromResult(Array.Empty<Guid>());
         /// <summary>
+        /// Chain lease: a root time ticker whose terminal write carried
+        /// <see cref="InternalFunctionContext.RetainsChainLease"/> keeps its <c>LeaseUntil</c>, lock
+        /// holder and <c>ChainGeneration</c> while its descendants run. Lease renewal treats such a
+        /// root as held under its <c>ChainGeneration</c>, stale recovery fences the generation and
+        /// cancels its InProgress descendants once the lease expires, and this call ends the lease
+        /// when the tree finishes. Returns the number of roots released (0 when not held).
+        /// </summary>
+        Task<int> ReleaseChainLeaseAsync(AcquisitionLease rootLease, CancellationToken cancellationToken = default)
+            => Task.FromResult(0);
+        /// <summary>
         /// Applies the OnStale policy to InProgress tickers whose lease expired:
         /// Restart (bounded by <paramref name="maxStaleRestarts"/>) resets them to
         /// Idle for re-acquisition; Cancel (or exhausted restarts) marks them

@@ -9,6 +9,7 @@ using StackExchange.Redis;
 using TickerQ.Utilities.Cluster;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Infrastructure;
 
 namespace TickerQ.Caching.StackExchangeRedis.Infrastructure;
 
@@ -43,11 +44,41 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
         if (type == TickerType.TimeTicker)
         {
             var row = await Serializer.GetAsync<TTimeTicker>(Keys.TimeTicker(tickerId)).ConfigureAwait(false);
-            return row == null || string.IsNullOrWhiteSpace(row.LockHolder) ? null : new TickerQExecutionOwnership
+            TTimeTicker? aggregate = null;
+            if (row == null)
+            {
+                // Chain steps are embedded in their root's aggregate document.
+                var aggregateId = await FindTimeTickerAggregateIdAsync(tickerId, cancellationToken).ConfigureAwait(false);
+                if (!aggregateId.HasValue) return null;
+                aggregate = await Serializer.GetAsync<TTimeTicker>(Keys.TimeTicker(aggregateId.Value)).ConfigureAwait(false);
+                row = aggregate == null ? null : FindEmbeddedTimeTicker(aggregate.Children, tickerId);
+                if (row == null) return null;
+            }
+            if (row.ParentId.HasValue)
+            {
+                // Chain steps are owned through the root's chain lease, not a lock of their own.
+                if (!row.ChainRootId.HasValue || !row.ChainGeneration.HasValue) return null;
+                var root = aggregate?.Id == row.ChainRootId.Value
+                    ? aggregate
+                    : await Serializer.GetAsync<TTimeTicker>(Keys.TimeTicker(row.ChainRootId.Value)).ConfigureAwait(false);
+                return root == null || root.Id != row.ChainRootId.Value || root.ParentId != null ||
+                       root.ChainGeneration != row.ChainGeneration || string.IsNullOrWhiteSpace(root.LockHolder) ||
+                       (root.Status != TickerStatus.InProgress && root.LeaseUntil == null)
+                    ? null
+                    : new TickerQExecutionOwnership
+                    {
+                        Type = type, TickerId = tickerId, ExecutionOwnerId = root.LockHolder,
+                        AcquisitionToken = row.ChainGeneration, Status = row.Status
+                    };
+            }
+            if (string.IsNullOrWhiteSpace(row.LockHolder)) return null;
+            var chainActive = row.LeaseUntil != null && row.ChainGeneration.HasValue &&
+                              ChainDeletionPolicy.IsTerminal(row.Status);
+            return new TickerQExecutionOwnership
             {
                 Type = type, TickerId = tickerId, ExecutionOwnerId = row.LockHolder,
-                AcquisitionToken = row.ParentId.HasValue ? row.ChainGeneration : row.AcquisitionToken,
-                Status = row.Status
+                AcquisitionToken = chainActive ? row.ChainGeneration : row.AcquisitionToken,
+                Status = row.Status, ChainActive = chainActive
             };
         }
         var occurrence = await Serializer.GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(Keys.CronOccurrence(tickerId)).ConfigureAwait(false);

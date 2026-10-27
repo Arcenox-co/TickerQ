@@ -482,6 +482,19 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
 
     private static int Rvi(RedisValue v) => int.Parse(v.ToString());
 
+    // Mirrors the chain-lease branch of RenewLease.lua / CheckLease.lua.
+    private static bool HoldsChainLease(JsonElement obj, string generation, int status,
+        RedisValue[] terminalStatuses, bool requireLease)
+    {
+        static string? Text(JsonElement element, string name)
+            => element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+                ? value.GetString() : null;
+        return terminalStatuses.Any(x => Rvi(x) == status) &&
+               string.IsNullOrEmpty(Text(obj, "ParentId")) &&
+               (!requireLease || !string.IsNullOrEmpty(Text(obj, "LeaseUntil"))) &&
+               string.Equals(Text(obj, "ChainGeneration"), generation, StringComparison.OrdinalIgnoreCase);
+    }
+
     private void SetupScriptOperations()
     {
         // ScriptEvaluateAsync handles Acquire/Release/RecoverDeadNode Lua scripts.
@@ -770,9 +783,12 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                 {
                     var token = obj.TryGetProperty("AcquisitionToken", out var at) && at.ValueKind != JsonValueKind.Null
                         ? at.GetString() : null;
-                    if (lockHolder != (string)argv[0] ||
-                        !string.Equals(token, (string)argv[1], StringComparison.OrdinalIgnoreCase) ||
-                        status != Rvi(argv[2]))
+                    var renewable = lockHolder == (string)argv[0] &&
+                        ((string.Equals(token, (string)argv[1], StringComparison.OrdinalIgnoreCase) &&
+                          status == Rvi(argv[2])) ||
+                         (argv.Length > 4 && (string)argv[4] == "1" &&
+                          HoldsChainLease(obj, (string)argv[1], status, argv[5..], requireLease: true)));
+                    if (!renewable)
                         return RedisResult.Create((RedisValue)0);
                     _store[entityKey] = SetJsonProperties(json, new Dictionary<string, object?>
                     {
@@ -786,8 +802,10 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                     var token = obj.TryGetProperty("AcquisitionToken", out var at) && at.ValueKind != JsonValueKind.Null
                         ? at.GetString() : null;
                     var held = lockHolder == (string)argv[0] &&
-                               string.Equals(token, (string)argv[1], StringComparison.OrdinalIgnoreCase) &&
-                               status == Rvi(argv[2]);
+                               ((string.Equals(token, (string)argv[1], StringComparison.OrdinalIgnoreCase) &&
+                                 status == Rvi(argv[2])) ||
+                                (argv.Length > 3 && (string)argv[3] == "1" &&
+                                 HoldsChainLease(obj, (string)argv[1], status, argv[4..], requireLease: false)));
                     return RedisResult.Create((RedisValue)(held ? 1 : 0));
                 }
 
@@ -2135,6 +2153,37 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
 
         var persisted = VerifyInStore<TimeTickerEntity>($"{Prefix}:tt:{ticker.Id}");
         Assert.Equal(renewedUntil, persisted!.LeaseUntil);
+    }
+
+    [Fact]
+    public async Task LeaseRenewalAndHeldCheck_AcceptChainLeasedTerminalRootUnderItsGeneration()
+    {
+        var ticker = CreateTimeTicker(status: TickerStatus.Idle, lockHolder: null, lockedAt: null);
+        SeedTimeTicker(ticker);
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync(
+            [ticker.Id], CancellationToken.None));
+        Assert.Equal(1, await _provider.UpdateTimeTicker(new InternalFunctionContext
+        {
+            TickerId = ticker.Id, ChainRootId = ticker.Id, ChainGeneration = acquired.ChainGeneration,
+            AcquisitionToken = acquired.AcquisitionToken, Type = TickerType.TimeTicker,
+            RetainsChainLease = true
+        }.SetProperty(x => x.Status, TickerStatus.Done), CancellationToken.None));
+
+        var chainLease = new AcquisitionLease(ticker.Id, acquired.ChainGeneration);
+        var otherLease = new AcquisitionLease(ticker.Id, Guid.NewGuid());
+        var renewedUntil = _fixedNow.AddMinutes(3);
+        Assert.Equal(1, await _provider.RenewTimeTickerLeases([chainLease], renewedUntil, CancellationToken.None));
+        Assert.Equal(0, await _provider.RenewTimeTickerLeases([otherLease], renewedUntil, CancellationToken.None));
+        Assert.Equal([ticker.Id], await _provider.GetStillHeldTickerIds([chainLease], [], CancellationToken.None));
+        Assert.Empty(await _provider.GetStillHeldTickerIds([otherLease], [], CancellationToken.None));
+        // Cron occurrences have no chain lease.
+        Assert.Empty(await _provider.GetStillHeldTickerIds([], [chainLease], CancellationToken.None));
+
+        var persisted = VerifyInStore<TimeTickerEntity>($"{Prefix}:tt:{ticker.Id}");
+        Assert.Equal(TickerStatus.Done, persisted!.Status);
+        Assert.Null(persisted.AcquisitionToken);
+        Assert.Equal(renewedUntil, persisted.LeaseUntil);
+        Assert.Equal(acquired.ChainGeneration, persisted.ChainGeneration);
     }
 
     [Fact]

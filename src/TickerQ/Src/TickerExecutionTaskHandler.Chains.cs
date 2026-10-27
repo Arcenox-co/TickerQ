@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Infrastructure;
@@ -51,6 +52,39 @@ internal partial class TickerExecutionTaskHandler
             return;
         }
 
+        // Descendants keep running after the root's own terminal write, so that write keeps the
+        // root's lease as the chain's ownership record until the whole tree has finished.
+        var retainsChainLease = mode == ExecutionMode.Scheduler && !isChild && context.ParentId == null;
+        context.RetainsChainLease = retainsChainLease;
+        try
+        {
+            await ExecuteChainAsync(context, isDue, registeredSource, cancellationToken, mode).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (retainsChainLease)
+                await ReleaseChainLeaseAsync(context).ConfigureAwait(false);
+        }
+    }
+
+    private async Task ReleaseChainLeaseAsync(InternalFunctionContext root)
+    {
+        try
+        {
+            await _internalTickerManager.ReleaseChainLeaseAsync(root, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // Not fatal: the retained lease expires and stale recovery ends it, finding nothing
+            // left running under the generation.
+            _logger.LogWarning(ex, "TickerQ could not release the chain lease of {TickerType} {TickerId}",
+                root.Type, root.TickerId);
+        }
+    }
+
+    private async Task ExecuteChainAsync(InternalFunctionContext context, bool isDue,
+        CancellationTokenSource registeredSource, CancellationToken cancellationToken, ExecutionMode mode)
+    {
         var root = new ChainStep(context);
         var ready = new Queue<ChainStep>();
         var advancing = new Queue<ChainStep>();

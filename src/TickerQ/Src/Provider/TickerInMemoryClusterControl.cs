@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using TickerQ.Utilities.Cluster;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Infrastructure;
 
 namespace TickerQ.Provider;
 
@@ -34,14 +35,34 @@ internal partial class TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicke
         TickerType type, Guid tickerId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (type == TickerType.TimeTicker && TimeTickers.TryGetValue(tickerId, out var time)
-            && !string.IsNullOrWhiteSpace(time.LockHolder))
+        if (type == TickerType.TimeTicker && TimeTickers.TryGetValue(tickerId, out var time))
+        {
+            if (time.ParentId.HasValue)
+            {
+                // Chain steps carry no lock of their own: the root's chain lease names their owner.
+                return Task.FromResult(time.ChainRootId is { } rootId && time.ChainGeneration.HasValue &&
+                                       TimeTickers.TryGetValue(rootId, out var root) && root.ParentId == null &&
+                                       root.ChainGeneration == time.ChainGeneration &&
+                                       !string.IsNullOrWhiteSpace(root.LockHolder) &&
+                                       (root.Status == TickerStatus.InProgress || root.LeaseUntil.HasValue)
+                    ? new TickerQExecutionOwnership
+                    {
+                        Type = type, TickerId = tickerId, ExecutionOwnerId = root.LockHolder,
+                        AcquisitionToken = time.ChainGeneration, Status = time.Status
+                    }
+                    : null);
+            }
+            if (string.IsNullOrWhiteSpace(time.LockHolder))
+                return Task.FromResult<TickerQExecutionOwnership>(null);
+            var chainActive = time.LeaseUntil.HasValue && time.ChainGeneration.HasValue &&
+                              ChainDeletionPolicy.IsTerminal(time.Status);
             return Task.FromResult(new TickerQExecutionOwnership
             {
                 Type = type, TickerId = tickerId, ExecutionOwnerId = time.LockHolder,
-                AcquisitionToken = time.ParentId.HasValue ? time.ChainGeneration : time.AcquisitionToken,
-                Status = time.Status
+                AcquisitionToken = chainActive ? time.ChainGeneration : time.AcquisitionToken,
+                Status = time.Status, ChainActive = chainActive
             });
+        }
         if (type == TickerType.CronTickerOccurrence && CronOccurrences.TryGetValue(tickerId, out var cron)
             && !string.IsNullOrWhiteSpace(cron.LockHolder))
             return Task.FromResult(new TickerQExecutionOwnership

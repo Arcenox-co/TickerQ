@@ -41,6 +41,14 @@ public sealed class TickerQExecutionOwnership
     public string ExecutionOwnerId { get; set; } = "";
     public Guid? AcquisitionToken { get; set; }
     public TickerStatus Status { get; set; }
+    /// <summary>
+    /// The ticker is a chain root whose own row is terminal while its descendants still run under
+    /// its chain lease; <see cref="AcquisitionToken"/> is then the chain generation.
+    /// </summary>
+    public bool ChainActive { get; set; }
+
+    /// <summary>Whether a cancellation request can still reach a running execution.</summary>
+    public bool IsCancellable => Status is TickerStatus.Queued or TickerStatus.InProgress || ChainActive;
 }
 
 public enum TickerQControlCommandStatus

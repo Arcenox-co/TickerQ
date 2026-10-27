@@ -1552,6 +1552,41 @@ public class InternalTickerManagerTests
             .UpdateCronOccurrenceFromInternalFunctionContext<FakeCronTicker>(Arg.Any<InternalFunctionContext>());
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RejectedRootTerminalWrite_IsUnacknowledged_OnlyWhenTheRootOwnsAChain(bool retainsChainLease)
+    {
+        var context = new InternalFunctionContext
+        {
+            TickerId = Guid.NewGuid(), Type = TickerType.TimeTicker, AcquisitionToken = Guid.NewGuid(),
+            RetainsChainLease = retainsChainLease
+        }.SetProperty(x => x.Status, TickerStatus.Failed);
+        _persistence.UpdateTimeTicker(context, Arg.Any<CancellationToken>()).Returns(0);
+
+        var update = _manager.UpdateTickerAsync(context, CancellationToken.None);
+
+        if (retainsChainLease)
+            await Assert.ThrowsAsync<TickerQ.Utilities.Exceptions.TickerResultNotAcknowledgedException>(() => update);
+        else
+            await update; // leaf roots keep the legacy best-effort terminal write
+    }
+
+    [Fact]
+    public async Task ReleaseChainLease_ReleasesTheRootUnderItsChainGeneration()
+    {
+        var root = new InternalFunctionContext
+        {
+            TickerId = Guid.NewGuid(), Type = TickerType.TimeTicker,
+            AcquisitionToken = Guid.NewGuid(), ChainGeneration = Guid.NewGuid()
+        };
+
+        await _manager.ReleaseChainLeaseAsync(root, CancellationToken.None);
+
+        await _persistence.Received(1).ReleaseChainLeaseAsync(
+            new AcquisitionLease(root.TickerId, root.ChainGeneration), Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task UpdateSkipTimeTickers_PersistsEachResourceWithGraphIdentity()
     {

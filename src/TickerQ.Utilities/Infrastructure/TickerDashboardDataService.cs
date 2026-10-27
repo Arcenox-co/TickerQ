@@ -1038,8 +1038,11 @@ namespace TickerQ.Utilities.Infrastructure
             if (type == TickerType.TimeTicker)
             {
                 var ticker = await _persistence.GetTimeTickerById(tickerId, cancellationToken).ConfigureAwait(false);
-                if (ticker?.Status != TickerStatus.InProgress) return false;
-                token = ticker.ParentId.HasValue ? ticker.ChainGeneration : ticker.AcquisitionToken;
+                // A terminal root still holding its chain lease is the handle of a running chain.
+                var chainActive = ticker is { ParentId: null, LeaseUntil: not null, ChainGeneration: not null } &&
+                                  ChainDeletionPolicy.IsTerminal(ticker.Status);
+                if (ticker?.Status != TickerStatus.InProgress && !chainActive) return false;
+                token = ticker.ParentId.HasValue || chainActive ? ticker.ChainGeneration : ticker.AcquisitionToken;
             }
             else if (type == TickerType.CronTickerOccurrence)
             {
@@ -1057,8 +1060,7 @@ namespace TickerQ.Utilities.Infrastructure
 
             var owner = await _persistence.GetExecutionOwnershipAsync(type, tickerId, cancellationToken)
                 .ConfigureAwait(false);
-            if (owner == null || owner.Status is not (TickerStatus.Queued or TickerStatus.InProgress)
-                || string.IsNullOrWhiteSpace(owner.ExecutionOwnerId)) return false;
+            if (owner == null || !owner.IsCancellable || string.IsNullOrWhiteSpace(owner.ExecutionOwnerId)) return false;
             var now = DateTime.UtcNow;
             return await _persistence.RequestCancellationAsync(new TickerQControlCommand
             {

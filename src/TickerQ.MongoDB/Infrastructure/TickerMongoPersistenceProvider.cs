@@ -3509,12 +3509,20 @@ namespace TickerQ.MongoDB.Infrastructure
             foreach (var lease in leases)
             {
                 if (!lease.AcquisitionToken.HasValue) continue;
+                // A terminal root holding its chain lease is renewed under its chain generation.
                 var filter = fb.And(
                     fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                     fb.Eq(x => x.Id, lease.TickerId),
                     fb.Eq(x => x.LockHolder, _lockHolder),
-                    fb.Eq(x => x.Status, TickerStatus.InProgress),
-                    fb.Eq(x => x.AcquisitionToken, lease.AcquisitionToken));
+                    fb.Or(
+                        fb.And(
+                            fb.Eq(x => x.Status, TickerStatus.InProgress),
+                            fb.Eq(x => x.AcquisitionToken, lease.AcquisitionToken)),
+                        fb.And(
+                            fb.Eq(x => x.ParentId, (Guid?)null),
+                            fb.Ne(x => x.LeaseUntil, (DateTime?)null),
+                            fb.Eq(x => x.ChainGeneration, lease.AcquisitionToken),
+                            fb.In(x => x.Status, TerminalStatuses))));
                 var result = await _context.TimeTickers.UpdateOneAsync(
                     filter, Builders<TTimeTicker>.Update.Set(x => x.LeaseUntil, leaseUntil),
                     cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -3557,12 +3565,20 @@ namespace TickerQ.MongoDB.Infrastructure
             foreach (var lease in timeTickerLeases ?? Array.Empty<AcquisitionLease>())
             {
                 if (!lease.AcquisitionToken.HasValue) continue;
+                // A root this node finished under the same generation is still its own, not lost:
+                // its chain may still be running, and nothing else can own that generation.
                 var filter = timeFb.And(
                     timeFb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                     timeFb.Eq(x => x.Id, lease.TickerId),
                     timeFb.Eq(x => x.LockHolder, _lockHolder),
-                    timeFb.Eq(x => x.Status, TickerStatus.InProgress),
-                    timeFb.Eq(x => x.AcquisitionToken, lease.AcquisitionToken));
+                    timeFb.Or(
+                        timeFb.And(
+                            timeFb.Eq(x => x.Status, TickerStatus.InProgress),
+                            timeFb.Eq(x => x.AcquisitionToken, lease.AcquisitionToken)),
+                        timeFb.And(
+                            timeFb.Eq(x => x.ParentId, (Guid?)null),
+                            timeFb.Eq(x => x.ChainGeneration, lease.AcquisitionToken),
+                            timeFb.In(x => x.Status, TerminalStatuses))));
                 if (await _context.TimeTickers.Find(filter).AnyAsync(cancellationToken).ConfigureAwait(false))
                     held.Add(lease.TickerId);
             }
@@ -3612,6 +3628,97 @@ namespace TickerQ.MongoDB.Infrastructure
             }
 
             return held.ToArray();
+        }
+
+        public async Task<int> ReleaseChainLeaseAsync(AcquisitionLease rootLease, CancellationToken cancellationToken = default)
+        {
+            if (!rootLease.AcquisitionToken.HasValue) return 0;
+            var fb = Builders<TTimeTicker>.Filter;
+            var filter = fb.And(
+                fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
+                fb.Eq(x => x.Id, rootLease.TickerId),
+                fb.Eq(x => x.ParentId, (Guid?)null),
+                fb.Eq(x => x.LockHolder, _lockHolder),
+                fb.Ne(x => x.LeaseUntil, (DateTime?)null),
+                fb.Eq(x => x.ChainGeneration, rootLease.AcquisitionToken),
+                fb.In(x => x.Status, TerminalStatuses));
+            var result = await _context.TimeTickers.UpdateOneAsync(
+                filter,
+                Builders<TTimeTicker>.Update
+                    .Set(x => x.LeaseUntil, (DateTime?)null)
+                    .Set(x => x.UpdatedAt, _clock.UtcNow),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            return (int)result.ModifiedCount;
+        }
+
+        /// <summary>
+        /// A terminal root whose chain lease expired belongs to a node that died mid-chain. Clearing the
+        /// root's generation fences any late write from that node; the descendants it left InProgress
+        /// are then cancelled. Steps that never started keep their status, as for a cancelled root.
+        /// A null <paramref name="session"/> runs the same CAS sequence on a standalone deployment.
+        /// </summary>
+        private async Task<int> RecoverDeadChainsAsync(
+            IClientSessionHandle session, DateTime now, string staleReason, CancellationToken cancellationToken)
+        {
+            var coll = _context.TimeTickers;
+            var fb = Builders<TTimeTicker>.Filter;
+            var deadChains = fb.And(
+                fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
+                fb.Eq(x => x.ParentId, (Guid?)null),
+                fb.In(x => x.Status, TerminalStatuses),
+                fb.Ne(x => x.ChainGeneration, (Guid?)null),
+                fb.Ne(x => x.LeaseUntil, (DateTime?)null),
+                fb.Lt(x => x.LeaseUntil, now));
+            var chains = await (session == null ? coll.Find(deadChains) : coll.Find(session, deadChains))
+                .Project(x => new { x.Id, x.ChainGeneration })
+                .Limit(100)
+                .ToListAsync(cancellationToken).ConfigureAwait(false);
+
+            var cancelled = 0;
+            foreach (var chain in chains)
+            {
+                // Root first, matching the lock order of child mutations.
+                var rootFilter = fb.And(
+                    fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
+                    fb.Eq(x => x.Id, chain.Id),
+                    fb.Eq(x => x.ParentId, (Guid?)null),
+                    fb.Eq(x => x.ChainGeneration, chain.ChainGeneration),
+                    fb.Ne(x => x.LeaseUntil, (DateTime?)null),
+                    fb.Lt(x => x.LeaseUntil, now));
+                var rootUpdate = Builders<TTimeTicker>.Update
+                    .Set(x => x.LeaseUntil, (DateTime?)null)
+                    .Set(x => x.ChainGeneration, (Guid?)null)
+                    .Set(x => x.UpdatedAt, now);
+                var fenced = session == null
+                    ? await coll.UpdateOneAsync(rootFilter, rootUpdate,
+                        cancellationToken: cancellationToken).ConfigureAwait(false)
+                    : await coll.UpdateOneAsync(session, rootFilter, rootUpdate,
+                        cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (fenced.ModifiedCount == 0)
+                    continue;
+
+                var descendantsFilter = fb.And(
+                    fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
+                    fb.Ne(x => x.ParentId, (Guid?)null),
+                    fb.Eq(x => x.ChainRootId, chain.Id),
+                    fb.Eq(x => x.ChainGeneration, chain.ChainGeneration),
+                    fb.Eq(x => x.Status, TickerStatus.InProgress));
+                var descendantsUpdate = Builders<TTimeTicker>.Update
+                    .Set(x => x.Status, TickerStatus.Cancelled)
+                    .Set(x => x.ExceptionMessage, staleReason)
+                    .Set(x => x.ExecutedAt, now)
+                    .Set(x => x.LeaseUntil, (DateTime?)null)
+                    .Set(x => x.AcquisitionToken, (Guid?)null)
+                    .Set(x => x.UpdatedAt, now);
+                var descendants = session == null
+                    ? await coll.UpdateManyAsync(descendantsFilter, descendantsUpdate,
+                        cancellationToken: cancellationToken).ConfigureAwait(false)
+                    : await coll.UpdateManyAsync(session, descendantsFilter, descendantsUpdate,
+                        cancellationToken: cancellationToken).ConfigureAwait(false);
+                cancelled += (int)descendants.ModifiedCount;
+            }
+
+            return cancelled;
         }
 
         public async Task<StaleTickerRecoveryResult> RecoverStaleTickers(int maxStaleRestarts, CancellationToken cancellationToken = default)
@@ -3859,6 +3966,10 @@ namespace TickerQ.MongoDB.Infrastructure
                 cancellationToken: cancellationToken).ConfigureAwait(false);
             result.CancelledCronOccurrences = (int)cancelOccurrenceResult.ModifiedCount;
 
+            result.CancelledTimeTickers += await ExecuteAdmittedGraphMutationAsync(
+                (session, ct) => RecoverDeadChainsAsync(session, now, staleReason, ct),
+                ct => RecoverDeadChainsAsync(null, now, staleReason, ct),
+                cancellationToken).ConfigureAwait(false);
             return result;
         }
 

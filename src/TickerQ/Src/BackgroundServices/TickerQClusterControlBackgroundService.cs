@@ -100,7 +100,7 @@ internal sealed class TickerQClusterControlBackgroundService<TTimeTicker, TCronT
                     var owner = await store.GetExecutionOwnershipAsync(
                         command.TickerType, command.TickerId, cancellationToken).ConfigureAwait(false);
                     if (owner != null
-                        && owner.Status is TickerStatus.Queued or TickerStatus.InProgress
+                        && owner.IsCancellable
                         && StringComparer.Ordinal.Equals(owner.ExecutionOwnerId, command.TargetExecutionOwnerId)
                         && owner.AcquisitionToken == command.AcquisitionToken)
                         continue;

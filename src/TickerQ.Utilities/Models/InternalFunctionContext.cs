@@ -118,6 +118,13 @@ namespace TickerQ.Utilities.Models
         /// </summary>
         [JsonIgnore]
         public bool IsChainRetryCoordinator { get; set; }
+        /// <summary>
+        /// Execution-only marker for a root whose descendants run after its own terminal write.
+        /// That write keeps the root's lease, so the row still records which node owns the chain
+        /// until the tree finishes and releases it.
+        /// </summary>
+        [JsonIgnore]
+        public bool RetainsChainLease { get; set; }
         /// <summary>The coordinator root's terminal outcome before it was acquired for retry.</summary>
         [JsonIgnore]
         public TickerStatus? ChainRetryPreviousStatus { get; set; }
