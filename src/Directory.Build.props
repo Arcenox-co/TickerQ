@@ -9,7 +9,7 @@
     -->
     <PropertyGroup>
         <TickerQDotNetMajor Condition="'$(TickerQDotNetMajor)' == ''">10</TickerQDotNetMajor>
-        <TickerQVersionMinorPatch>5.0</TickerQVersionMinorPatch>
+        <TickerQVersionMinorPatch>5.1</TickerQVersionMinorPatch>
         <TargetFramework>net$(TickerQDotNetMajor).0</TargetFramework>
         <VersionPrefix>$(TickerQDotNetMajor).$(TickerQVersionMinorPatch)</VersionPrefix>
         <TickerQFunctionalMinorLine>$([System.Version]::Parse('$(VersionPrefix)').Minor).x</TickerQFunctionalMinorLine>
