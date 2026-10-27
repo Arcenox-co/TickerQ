@@ -102,9 +102,11 @@ public sealed class EfChainLeaseEndToEndTests : IAsyncLifetime
         var chain = await StartChainAsync(async ct =>
         {
             // Another owner fences the chain generation while this node still runs the child.
+            // The value is computed first: EF Core 8/9 try to translate Guid.NewGuid() to SQL.
+            var otherGeneration = Guid.NewGuid();
             await using (var db = new TestTickerQDbContext(_dbOptions))
                 await db.Set<TimeTickerEntity>().Where(x => x.Id == RootId)
-                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.ChainGeneration, Guid.NewGuid()), ct);
+                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.ChainGeneration, otherGeneration), ct);
             try { await Task.Delay(TimeSpan.FromSeconds(5), ct); }
             catch (OperationCanceledException) { observedCancellation = true; throw; }
         });
