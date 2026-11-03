@@ -18,11 +18,12 @@ namespace TickerQ.EntityFrameworkCore.Tests.Infrastructure;
 [AttributeUsage(AttributeTargets.Method)]
 public sealed class PostgreSqlRaceFactAttribute : FactAttribute
 {
+    internal static bool Enabled => string.Equals(
+        Environment.GetEnvironmentVariable("TICKERQ_POSTGRES_RACE_TESTS"), "1", StringComparison.Ordinal);
+
     public PostgreSqlRaceFactAttribute()
     {
-        if (!string.Equals(
-                Environment.GetEnvironmentVariable("TICKERQ_POSTGRES_RACE_TESTS"),
-                "1", StringComparison.Ordinal))
+        if (!Enabled)
             Skip = "Set TICKERQ_POSTGRES_RACE_TESTS=1 to run the PostgreSQL MVCC race test.";
     }
 }

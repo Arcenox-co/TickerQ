@@ -122,10 +122,9 @@ internal sealed class AcquiredExecutionQueue : IDisposable
                     if (conflict) await ReleaseAsync(function).ConfigureAwait(false);
                     continue;
                 }
-                var life = new AcquiredExecutionLifecycle(
+                var life = new AcquiredExecutionLifecycle(this, function, isDue,
                     new TickerExecutionKey(function.RuntimePartitionKey ?? TickerQRuntimePartition.LegacyGlobal.StorageKey,
-                        function.Type, function.TickerId), source, executionStop, admissionToken,
-                    owner => TrackCancellationReleaseAsync(owner, function));
+                        function.Type, function.TickerId), source, executionStop, admissionToken);
                 pending.Add((function, source, life));
             }
 
@@ -138,37 +137,6 @@ internal sealed class AcquiredExecutionQueue : IDisposable
                 {
                     // Queue cancellation only interrupts admission. A successfully published callback
                     // has cancellation cleanup registered even if the scanner stops before dequeue.
-                    async Task ExecuteAsync(CancellationToken schedulerToken)
-                    {
-                        // Accepted orchestrations are invoked even when disposal races with
-                        // dispatch. Return their exact generation to persistence if not started.
-                        if (schedulerToken.IsCancellationRequested ||
-                            (_licenseState != null && !_licenseState.ExecutionAllowed &&
-                             !item.Source.IsCancellationRequested))
-                        {
-                            if (item.Life.AbandonIfQueued()) await ReleaseAsync(item.Function).ConfigureAwait(false);
-                            return;
-                        }
-                        if (!item.Life.TryBeginExecution()) return;
-                        try
-                        {
-                            // The per-job source drives function gates, retry waits, children,
-                            // and attempts. Include scheduler disposal in that same lifetime.
-                            using var schedulerCancellation = schedulerToken.UnsafeRegister(_ =>
-                            {
-                                try { item.Source.Cancel(); }
-                                catch (AggregateException ex)
-                                {
-                                    _logger.LogWarning(ex,
-                                        "TickerQ job cancellation callback failed during scheduler shutdown");
-                                }
-                            }, null);
-                            await _handler.ExecuteRegisteredTaskAsync(item.Function, isDue, item.Source,
-                                item.Source.Token).ConfigureAwait(false);
-                        }
-                        finally { item.Life.CompleteExecution(); }
-                    }
-
                     if (_scheduler is ITickerQExecutionScheduler executionScheduler)
                     {
                         while (true)
@@ -186,7 +154,7 @@ internal sealed class AcquiredExecutionQueue : IDisposable
                                         // No user code runs on this path: the handler finalizes
                                         // the cancelled tree before attempting execution. Await
                                         // one cleanup inline, without consuming a workflow slot.
-                                        await ExecuteAsync(CancellationToken.None).ConfigureAwait(false);
+                                        await item.Life.ExecuteAsync(CancellationToken.None).ConfigureAwait(false);
                                         break;
                                     }
                                     // License state changes do not publish a capacity signal.
@@ -211,7 +179,7 @@ internal sealed class AcquiredExecutionQueue : IDisposable
                             admissionToken.ThrowIfCancellationRequested();
                             if (_licenseState != null && !_licenseState.ExecutionAllowed) return false;
                             if (!item.Life.IsQueued) break;
-                            if (executionScheduler.TryQueueOrchestration(ExecuteAsync, admissionToken)) break;
+                            if (executionScheduler.TryQueueOrchestration(item.Life.ExecuteAsync, admissionToken)) break;
                             if (!waitForCapacity || _scheduler.IsFrozen || _scheduler.IsDisposed)
                                 throw new InvalidOperationException("The scheduler cannot admit more work right now.");
                             // Another producer won the available slot. Wait for the next
@@ -222,7 +190,7 @@ internal sealed class AcquiredExecutionQueue : IDisposable
                     {
                         // Legacy schedulers combine admission and stop in one token. Preserve
                         // their existing drain behavior: the acquired source owns execution.
-                        await _scheduler.QueueAsync(_ => ExecuteAsync(CancellationToken.None), item.Function.CachedPriority, admissionToken)
+                        await _scheduler.QueueAsync(_ => item.Life.ExecuteAsync(CancellationToken.None), item.Function.CachedPriority, admissionToken)
                             .ConfigureAwait(false);
                     }
                 }
@@ -306,25 +274,35 @@ internal sealed class AcquiredExecutionQueue : IDisposable
         }
     }
 
+    /// <summary>
+    /// One acquired generation: its admission state and the work that runs it. Holding the queue,
+    /// function and source here lets the callbacks be static, with no per-job closures.
+    /// </summary>
     private sealed class AcquiredExecutionLifecycle
     {
+        private readonly AcquiredExecutionQueue _owner;
+        private readonly InternalFunctionContext _function;
+        private readonly bool _isDue;
         private readonly TickerExecutionKey _key;
         private readonly CancellationTokenSource _source;
         private readonly CancellationTokenRegistration _stoppingRegistration;
         private readonly CancellationTokenRegistration _admissionRegistration;
-        private readonly Func<AcquiredExecutionLifecycle, Task> _releaseQueuedExecution;
         private int _state; // 0 = queued, 1 = executing, 2 = completed, 3 = cancellation release pending
 
         internal AcquiredExecutionLifecycle(
+            AcquiredExecutionQueue owner,
+            InternalFunctionContext function,
+            bool isDue,
             TickerExecutionKey key,
             CancellationTokenSource source,
             CancellationToken stoppingToken,
-            CancellationToken admissionToken,
-            Func<AcquiredExecutionLifecycle, Task> releaseQueuedExecution)
+            CancellationToken admissionToken)
         {
+            _owner = owner;
+            _function = function;
+            _isDue = isDue;
             _key = key;
             _source = source;
-            _releaseQueuedExecution = releaseQueuedExecution;
             _stoppingRegistration = stoppingToken.UnsafeRegister(
                 static state => ((AcquiredExecutionLifecycle)state).ReleaseIfQueued(), this);
             _admissionRegistration = admissionToken.UnsafeRegister(
@@ -377,7 +355,40 @@ internal sealed class AcquiredExecutionQueue : IDisposable
         private void ReleaseIfQueued()
         {
             if (Interlocked.CompareExchange(ref _state, 3, 0) == 0)
-                _ = _releaseQueuedExecution(this);
+                _ = _owner.TrackCancellationReleaseAsync(this, _function);
+        }
+
+        internal async Task ExecuteAsync(CancellationToken schedulerToken)
+        {
+            // Accepted orchestrations are invoked even when disposal races with
+            // dispatch. Return their exact generation to persistence if not started.
+            var licenseState = _owner._licenseState;
+            if (schedulerToken.IsCancellationRequested ||
+                (licenseState != null && !licenseState.ExecutionAllowed && !_source.IsCancellationRequested))
+            {
+                if (AbandonIfQueued()) await _owner.ReleaseAsync(_function).ConfigureAwait(false);
+                return;
+            }
+            if (!TryBeginExecution()) return;
+            try
+            {
+                // The per-job source drives function gates, retry waits, children,
+                // and attempts. Include scheduler disposal in that same lifetime.
+                using var schedulerCancellation = schedulerToken.UnsafeRegister(
+                    static state => ((AcquiredExecutionLifecycle)state).CancelForSchedulerStop(), this);
+                await _owner._handler.ExecuteRegisteredTaskAsync(_function, _isDue, _source, _source.Token)
+                    .ConfigureAwait(false);
+            }
+            finally { CompleteExecution(); }
+        }
+
+        private void CancelForSchedulerStop()
+        {
+            try { _source.Cancel(); }
+            catch (AggregateException ex)
+            {
+                _owner._logger.LogWarning(ex, "TickerQ job cancellation callback failed during scheduler shutdown");
+            }
         }
     }
 

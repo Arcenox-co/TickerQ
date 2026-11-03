@@ -12,10 +12,11 @@ using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Licensing;
 using TickerQ.Utilities.Models;
+using TickerQ.Utilities.Infrastructure;
 
 namespace TickerQ.BackgroundServices;
 
-internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHostScheduler
+internal class TickerQSchedulerBackgroundService : TickerQBackgroundService, ITickerQHostScheduler
 {
     private readonly RestartThrottleManager _restartThrottle;
     private readonly IInternalTickerManager _internalTickerManager;
@@ -31,6 +32,10 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     private readonly SemaphoreSlim _acquisitionPublicationGate = new(1, 1);
     private int _started;
     private int _stopping;
+    // Counts every notification that work was added or changed. A store read cannot see work
+    // committed after it began, and a notification that arrives during the read compares itself
+    // with the plan that read is about to replace, so the loop reads again when this moved.
+    private long _changes;
     public bool SkipFirstRun;
     public bool IsRunning => Volatile.Read(ref _started) == 1;
     private DateTime _nextFailureWarning;
@@ -63,6 +68,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         TickerQLicenseStateProvider licenseState,
         ILogger<TickerQSchedulerBackgroundService> logger = null,
         ITickerQActivationGate activationGate = null, AcquiredExecutionQueue acquiredQueue = null)
+        : base(logger ?? (ILogger)NullLogger.Instance)
     {
         _executionContext = executionContext;
         _taskScheduler = taskScheduler;
@@ -131,7 +137,10 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
             while (!stoppingToken.IsCancellationRequested && _licenseState.ExecutionAllowed)
             {
-                _schedulerLoopCancellationTokenSource = SafeCancellationTokenSource.CreateLinked(stoppingToken);
+                // A restart cancels this source from a timer thread, and stopping cancels it from the
+                // host's token; a store driver's callback failing there must not escape into either.
+                _schedulerLoopCancellationTokenSource = SafeCancellationTokenSource.CreateLinked(
+                    ReportCancellationCallbackFailure, stoppingToken);
 
                 try
                 {
@@ -173,6 +182,13 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
     private async Task RunTickerQSchedulerAsync(CancellationToken stoppingToken, CancellationToken cancellationToken)
     {
+        var minInterval = _minPollingInterval < TimeSpan.Zero ? TimeSpan.Zero : _minPollingInterval;
+        // MinPollingInterval spaces discovery reads, the only polling this loop does. Claiming a
+        // batch a read already selected is not a poll, so that batch is claimed when it is due
+        // rather than after the floor. A restart (a notification) starts a fresh loop, which reads
+        // at once; draining overdue work also reads without waiting.
+        DateTime? lastDiscoveryUtc = null;
+        var draining = false;
         while (!stoppingToken.IsCancellationRequested
                && !cancellationToken.IsCancellationRequested
                && _licenseState.ExecutionAllowed)
@@ -255,8 +271,19 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                 }
             }
             
+            if (!draining && lastDiscoveryUtc is { } lastDiscovery)
+            {
+                var floor = lastDiscovery + minInterval - DateTime.UtcNow;
+                if (floor > TimeSpan.Zero)
+                    await Task.Delay(floor, cancellationToken).ConfigureAwait(false);
+            }
+
+            var changesBeforeRead = Interlocked.Read(ref _changes);
             var (timeRemaining, functions) =
                 await _internalTickerManager.GetNextTickers(cancellationToken);
+            // Spaced from the read's end, as before: a slow store is not read more often.
+            lastDiscoveryUtc = DateTime.UtcNow;
+            draining = functions.Length > 0 && timeRemaining <= TimeSpan.Zero;
 
             _executionContext.SetFunctions(functions);
 
@@ -276,18 +303,28 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
             }
             else
             {
-                var minInterval = _minPollingInterval < TimeSpan.Zero
-                    ? TimeSpan.Zero
-                    : _minPollingInterval;
-
-                // A successfully acquired due batch is work, not an idle poll. Keep
-                // draining bounded batches through the dispatcher's capacity wait.
-                // Empty acquisition results still back off (e.g. another node won).
-                sleepDuration = functions.Length > 0 && timeRemaining <= TimeSpan.Zero
-                    ? TimeSpan.Zero
-                    : timeRemaining <= minInterval ? minInterval : timeRemaining;
-                _executionContext.SetNextPlannedOccurrence(DateTime.UtcNow.Add(sleepDuration));
+                // A selected batch waits only until it is due; a due one drains at once through
+                // the dispatcher's capacity wait. With nothing selected the next read is a poll,
+                // so it waits for the floor (this also backs off when another node won).
+                var now = DateTime.UtcNow;
+                var untilFloor = lastDiscoveryUtc.Value + minInterval - now;
+                sleepDuration = functions.Length > 0
+                    ? timeRemaining > TimeSpan.Zero ? timeRemaining : TimeSpan.Zero
+                    : timeRemaining > untilFloor ? timeRemaining : untilFloor;
+                if (sleepDuration < TimeSpan.Zero) sleepDuration = TimeSpan.Zero;
+                // The planned occurrence is when this loop next reads the store, which is what
+                // RestartIfNeeded compares a newly scheduled job against: claiming the selected
+                // batch reads nothing new, so a job due before the next read must still restart.
+                var nextRead = now.Add(sleepDuration);
+                if (!draining && functions.Length > 0 && untilFloor > sleepDuration)
+                    nextRead = now.Add(untilFloor);
+                _executionContext.SetNextPlannedOccurrence(nextRead);
             }
+
+            // Compared only after the new plan is published: a later notification then compares
+            // itself with that plan, and an earlier one is caught here.
+            if (Interlocked.Read(ref _changes) != changesBeforeRead)
+                _restartThrottle.RequestRestart();
 
             NotifySafely(_executionContext.GetNextPlannedOccurrence(), CoreNotifyActionType.NotifyNextOccurence);
 
@@ -323,6 +360,10 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                 .ConfigureAwait(false);
         }
     }
+
+    private void ReportCancellationCallbackFailure(AggregateException exception)
+        => _logger.LogWarning(exception,
+            "A cancellation callback failed while the TickerQ scheduler loop was cancelled; the loop was cancelled normally");
 
     private static TimeSpan ResolveMinPollingInterval(SchedulerOptionsBuilder schedulerOptions)
     {
@@ -382,6 +423,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     {
         if (!dateTime.HasValue)
             return;
+        Interlocked.Increment(ref _changes);
         
         var now = DateTime.UtcNow;
         var nextPlannedOccurrence = _executionContext.GetNextPlannedOccurrence();
@@ -414,6 +456,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
     public void Restart()
     {
+        Interlocked.Increment(ref _changes);
         _restartThrottle.RequestRestart();
     }
     

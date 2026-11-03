@@ -96,6 +96,229 @@ public class TickerQSchedulerBackgroundServiceTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task RunScheduler_ClaimsASelectedBatchWhenDue_NotAfterThePollingFloor()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        var claimed = new TaskCompletionSource<DateTime>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var dueAt = DateTime.UtcNow.AddMilliseconds(300);
+        var reads = 0;
+        manager.GetNextTickers(Arg.Any<CancellationToken>()).Returns(_ => Interlocked.Increment(ref reads) == 1
+            ? (TimeSpan.FromMilliseconds(300), new[] { Selected(dueAt) })
+            : (Timeout.InfiniteTimeSpan, Array.Empty<InternalFunctionContext>()));
+        manager.SetTickersInProgress(Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                claimed.TrySetResult(DateTime.UtcNow);
+                return call.ArgAt<InternalFunctionContext[]>(0);
+            });
+
+        using var service = NewService(manager, TimeSpan.FromSeconds(5));
+        using var cts = new CancellationTokenSource();
+        var run = InvokeRunSchedulerAsync(service, CancellationToken.None, cts.Token);
+        try
+        {
+            var at = await claimed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.InRange(at, dueAt, dueAt.AddSeconds(1));
+        }
+        finally
+        {
+            cts.Cancel();
+            try { await run; } catch (OperationCanceledException) { }
+        }
+    }
+
+    [Fact]
+    public async Task RunScheduler_PlansTheNextRead_NotThePastClaim_SoAJobDueBeforeItStillRestarts()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        var executionContext = new TickerExecutionContext();
+        var claimed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var readAt = DateTime.MinValue;
+        manager.GetNextTickers(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            readAt = DateTime.UtcNow;
+            return (TimeSpan.FromMilliseconds(100), new[] { Selected(DateTime.UtcNow.AddMilliseconds(100)) });
+        });
+        manager.SetTickersInProgress(Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                claimed.TrySetResult();
+                return call.ArgAt<InternalFunctionContext[]>(0);
+            });
+
+        using var service = new TickerQSchedulerBackgroundService(executionContext,
+            Substitute.For<ITickerExecutionTaskHandler>(), Substitute.For<ITickerQTaskScheduler>(), manager,
+            new SchedulerOptionsBuilder { MinPollingInterval = TimeSpan.FromSeconds(5) }, LicenseTestState.Active());
+        using var cts = new CancellationTokenSource();
+        var run = InvokeRunSchedulerAsync(service, CancellationToken.None, cts.Token);
+        try
+        {
+            await claimed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await Task.Delay(100); // the loop is now waiting for its next read
+            var planned = executionContext.GetNextPlannedOccurrence();
+            Assert.NotNull(planned);
+            Assert.True(planned!.Value >= readAt.AddSeconds(5).AddMilliseconds(-50),
+                $"Planned {planned:O} is the claim, not the next read after {readAt:O}.");
+            Assert.True(planned.Value > DateTime.UtcNow.AddSeconds(4));
+        }
+        finally
+        {
+            cts.Cancel();
+            try { await run; } catch (OperationCanceledException) { }
+        }
+    }
+
+    [Fact]
+    public async Task RunScheduler_SpacesDiscoveryReadsByThePollingFloor_WhenEachReadFindsWorkSoonDue()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        var readTimes = new List<DateTime>();
+        manager.GetNextTickers(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            lock (readTimes) readTimes.Add(DateTime.UtcNow);
+            return (TimeSpan.FromMilliseconds(20), new[] { Selected(DateTime.UtcNow.AddMilliseconds(20)) });
+        });
+        manager.SetTickersInProgress(Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>())
+            .Returns(call => call.ArgAt<InternalFunctionContext[]>(0));
+
+        using var service = NewService(manager, TimeSpan.FromMilliseconds(400));
+        using var cts = new CancellationTokenSource();
+        var run = InvokeRunSchedulerAsync(service, CancellationToken.None, cts.Token);
+        await Task.Delay(1300);
+        cts.Cancel();
+        try { await run; } catch (OperationCanceledException) { }
+
+        DateTime[] reads;
+        lock (readTimes) reads = readTimes.ToArray();
+        Assert.InRange(reads.Length, 2, 4);
+        for (var i = 1; i < reads.Length; i++)
+            Assert.True(reads[i] - reads[i - 1] >= TimeSpan.FromMilliseconds(390),
+                $"Read {i} came {(reads[i] - reads[i - 1]).TotalMilliseconds} ms after the previous one.");
+    }
+
+    [Fact]
+    public async Task RunScheduler_WithNothingScheduled_ReadsOnceAndSleeps()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        manager.GetNextTickers(Arg.Any<CancellationToken>())
+            .Returns((Timeout.InfiniteTimeSpan, Array.Empty<InternalFunctionContext>()));
+
+        using var service = NewService(manager, TimeSpan.Zero);
+        using var cts = new CancellationTokenSource();
+        var run = InvokeRunSchedulerAsync(service, CancellationToken.None, cts.Token);
+        await Task.Delay(500);
+        cts.Cancel();
+        try { await run; } catch (OperationCanceledException) { }
+
+        await manager.Received(1).GetNextTickers(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public void FreshScheduler_HasNothingPlanned_SoItsFirstNotificationRestartsIt()
+    {
+        var logger = new RecordingSchedulerLogger();
+        var executionContext = new TickerExecutionContext();
+        using var service = new TickerQSchedulerBackgroundService(executionContext,
+            Substitute.For<ITickerExecutionTaskHandler>(), Substitute.For<ITickerQTaskScheduler>(),
+            Substitute.For<IInternalTickerManager>(), new SchedulerOptionsBuilder { DetailedLoggingEnabled = true },
+            LicenseTestState.Active(), logger);
+
+        Assert.Null(executionContext.GetNextPlannedOccurrence());
+        service.RestartIfNeeded(DateTime.UtcNow.AddSeconds(1));
+
+        Assert.Contains("no occurrence is currently planned", Assert.Single(logger.Entries).Message);
+    }
+
+    [Fact]
+    public async Task WorkAddedDuringTheFirstRead_IsReadAgain()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        var firstRead = new TaskCompletionSource<(TimeSpan, InternalFunctionContext[])>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var reading = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var readAgain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reads = 0;
+        manager.GetNextTickers(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            if (Interlocked.Increment(ref reads) == 1)
+            {
+                reading.TrySetResult();
+                return firstRead.Task;
+            }
+            readAgain.TrySetResult();
+            return Task.FromResult((Timeout.InfiniteTimeSpan, Array.Empty<InternalFunctionContext>()));
+        });
+
+        using var service = NewService(manager, TimeSpan.Zero);
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await reading.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            // A cron committed after the read began: that read cannot return it.
+            service.RestartIfNeeded(DateTime.UtcNow.AddSeconds(1));
+            firstRead.SetResult((Timeout.InfiniteTimeSpan, []));
+
+            await readAgain.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task WorkAddedWhileALaterReadIsInFlight_IsReadAgain_ThoughThePreviousPlanLooksSooner()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        var secondRead = new TaskCompletionSource<(TimeSpan, InternalFunctionContext[])>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var reading = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var readAgain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reads = 0;
+        manager.GetNextTickers(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            switch (Interlocked.Increment(ref reads))
+            {
+                case 1:
+                    // Plans a wake shortly; while the next read runs, that plan is already in the past.
+                    return Task.FromResult((TimeSpan.FromMilliseconds(50), Array.Empty<InternalFunctionContext>()));
+                case 2:
+                    reading.TrySetResult();
+                    return secondRead.Task;
+                default:
+                    readAgain.TrySetResult();
+                    return Task.FromResult((Timeout.InfiniteTimeSpan, Array.Empty<InternalFunctionContext>()));
+            }
+        });
+
+        using var service = NewService(manager, TimeSpan.Zero);
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await reading.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            service.RestartIfNeeded(DateTime.UtcNow.AddSeconds(1));
+            secondRead.SetResult((Timeout.InfiniteTimeSpan, []));
+
+            await readAgain.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private static TickerQSchedulerBackgroundService NewService(IInternalTickerManager manager, TimeSpan minPollingInterval)
+        => new(new TickerExecutionContext(), Substitute.For<ITickerExecutionTaskHandler>(),
+            Substitute.For<ITickerQTaskScheduler>(), manager,
+            new SchedulerOptionsBuilder { MinPollingInterval = minPollingInterval }, LicenseTestState.Active());
+
+    private static InternalFunctionContext Selected(DateTime executionTime) => new()
+    {
+        TickerId = Guid.NewGuid(), FunctionName = "Selected", ExecutionTime = executionTime,
+        TimeTickerChildren = []
+    };
+
     private static Task InvokeRunSchedulerAsync(
         TickerQSchedulerBackgroundService service,
         CancellationToken stoppingToken,

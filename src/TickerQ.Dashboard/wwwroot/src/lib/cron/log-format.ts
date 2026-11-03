@@ -27,6 +27,8 @@ export interface LogEntry {
 export interface ExceptionDetails {
   type: string | null;
   message: string;
+  /** Why TickerQ cancelled the execution, when it knows. */
+  reason: string | null;
   method: string | null;
   sourceFile: string | null;
   sourceLine: number | null;
@@ -81,6 +83,7 @@ export function parseExceptionDetails(raw: string): ExceptionDetails {
         return {
           type: readString("Type", "type") ?? readString("ExceptionType", "exceptionType"),
           message,
+          reason: readString("Reason", "reason"),
           method: readString("Method", "method"),
           sourceFile: readString("SourceFile", "sourceFile"),
           sourceLine,
@@ -91,7 +94,7 @@ export function parseExceptionDetails(raw: string): ExceptionDetails {
   } catch {
     // Legacy/provider-generated reasons are deliberately plain text.
   }
-  return { type: null, message: raw, method: null, sourceFile: null, sourceLine: null, stackTrace: null };
+  return { type: null, message: raw, reason: null, method: null, sourceFile: null, sourceLine: null, stackTrace: null };
 }
 
 /**
@@ -116,5 +119,6 @@ function applicationStackTrace(stackTrace: string | null): string | null {
 }
 
 export function extractReason(raw: string): string {
-  return parseExceptionDetails(raw).message;
+  const details = parseExceptionDetails(raw);
+  return details.reason ?? details.message;
 }

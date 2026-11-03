@@ -5,9 +5,11 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Licensing;
 using TickerQ.Utilities.Models;
+using TickerQ.Utilities.Infrastructure;
 
 namespace TickerQ.BackgroundServices;
 
@@ -23,7 +25,7 @@ namespace TickerQ.BackgroundServices;
 ///    their per-job <c>OnStale</c> policy is applied (Restart bounded by
 ///    <see cref="SchedulerOptionsBuilder.MaxStaleRestarts"/>, else Cancel).
 /// </summary>
-internal class TickerQStaleJobRecoveryBackgroundService : BackgroundService
+internal class TickerQStaleJobRecoveryBackgroundService : TickerQBackgroundService
 {
     private readonly IInternalTickerManager _internalTickerManager;
     private readonly SchedulerOptionsBuilder _schedulerOptions;
@@ -39,6 +41,7 @@ internal class TickerQStaleJobRecoveryBackgroundService : BackgroundService
         Utilities.Interfaces.ITickerQFailureNotifier notifier,
         TickerQLicenseStateProvider licenseState,
         Utilities.Interfaces.ITickerQActivationGate activationGate = null)
+        : base(logger)
     {
         _internalTickerManager = internalTickerManager;
         _schedulerOptions = schedulerOptions;
@@ -123,7 +126,7 @@ internal class TickerQStaleJobRecoveryBackgroundService : BackgroundService
         var lost = await _internalTickerManager.GetLostLeaseTickerIdsAsync(timeTickerLeases, occurrenceLeases, ct);
         foreach (var key in lost)
         {
-            if (TickerCancellationTokenManager.RequestTickerCancellation(partitionKey, key))
+            if (TickerCancellationTokenManager.RequestTickerCancellation(partitionKey, key, TickerCancellationCause.LeaseLost))
                 _logger.LogWarning(
                     "{TickerType} {TickerId} lost its lease (recovered by another node while this one was unresponsive); cancelling the local execution — its result would be discarded by fencing",
                     key.Type, key.TickerId);

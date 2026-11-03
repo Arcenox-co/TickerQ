@@ -44,6 +44,7 @@ test("structured exception diagnostics retain source and remain backward compati
   assert.deepEqual(parseExceptionDetails(raw), {
     type: "System.InvalidOperationException",
     message: "Payment failed",
+    reason: null,
     method: "Orders.ChargeAsync",
     sourceFile: "ChargeJob.cs",
     sourceLine: 87,
@@ -54,11 +55,25 @@ test("structured exception diagnostics retain source and remain backward compati
   assert.deepEqual(parseExceptionDetails("legacy failure"), {
     type: null,
     message: "legacy failure",
+    reason: null,
     method: null,
     sourceFile: null,
     sourceLine: null,
     stackTrace: null,
   });
+});
+
+test("a cancellation's cause is shown instead of the generic exception message", () => {
+  const raw = JSON.stringify({
+    Type: "System.Threading.Tasks.TaskCanceledException",
+    Message: "A task was canceled.",
+    Reason: "Cancelled: requested from the dashboard or a manager.",
+  });
+
+  const details = parseExceptionDetails(raw);
+  assert.equal(details.reason, "Cancelled: requested from the dashboard or a manager.");
+  assert.equal(details.message, "A task was canceled.");
+  assert.equal(extractReason(raw), "Cancelled: requested from the dashboard or a manager.");
 });
 
 test("structured exception diagnostics hide generated and scheduler frames", () => {

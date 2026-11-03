@@ -50,8 +50,16 @@ internal sealed class TickerLifecycleLogger(ITickerExecutionLogStore store, Exec
     public void Started(InternalFunctionContext context, int attempt)
     {
         if (!IsEnabled(LogLevel.Information)) return;
-        Write(context, TickerLifecycleEvent.Started, TickerStatus.InProgress, $"Running — attempt {attempt + 1}.", attempt: attempt);
+        var message = (uint)attempt < (uint)StartedMessages.Length ? StartedMessages[attempt] : $"Running — attempt {attempt + 1}.";
+        Write(context, TickerLifecycleEvent.Started, TickerStatus.InProgress, message, attempt: attempt);
     }
+
+    // Every execution logs its start; the common attempts' messages are formatted once.
+    private static readonly string[] StartedMessages =
+    [
+        "Running — attempt 1.", "Running — attempt 2.", "Running — attempt 3.", "Running — attempt 4.",
+        "Running — attempt 5.", "Running — attempt 6.", "Running — attempt 7.", "Running — attempt 8.",
+    ];
 
     public void RetryScheduled(InternalFunctionContext context, int attempt, int delaySeconds)
     {
@@ -76,7 +84,7 @@ internal sealed class TickerLifecycleLogger(ITickerExecutionLogStore store, Exec
     public void Committed(InternalFunctionContext context)
     {
         if (!IsEnabled(LevelFor(TickerLifecycleEvent.Completed, context.Status))) return;
-        if (!context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+        if (!context.IsPropertyTracked(nameof(InternalFunctionContext.Status)) ||
             context.Status is not (TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed or TickerStatus.Cancelled or TickerStatus.Skipped)) return;
         var outcome = context.Status switch
         {
@@ -88,6 +96,7 @@ internal sealed class TickerLifecycleLogger(ITickerExecutionLogStore store, Exec
         var duration = elapsedMs < 1 ? "<1ms" : elapsedMs < 1000
             ? elapsedMs.ToString(CultureInfo.InvariantCulture) + "ms"
             : (elapsedMs / 1000d).ToString("0.###", CultureInfo.InvariantCulture) + "s";
+        // The retry count keeps current-culture formatting, as the legacy message did.
         Write(context, TickerLifecycleEvent.Completed, context.Status,
             $"{outcome} — {duration}; {context.RetryCount} retries." +
             (context.Status is TickerStatus.Done or TickerStatus.DueDone ? "" : Reason(context.ExceptionDetails)));
@@ -114,7 +123,9 @@ internal sealed class TickerLifecycleLogger(ITickerExecutionLogStore store, Exec
         try
         {
             using var json = JsonDocument.Parse(raw);
-            if (json.RootElement.ValueKind == JsonValueKind.Object && json.RootElement.TryGetProperty("Message", out var message) &&
+            // A cancellation names its cause in Reason; the exception message alone reads the same for every cause.
+            if (json.RootElement.ValueKind == JsonValueKind.Object &&
+                (json.RootElement.TryGetProperty("Reason", out var message) || json.RootElement.TryGetProperty("Message", out message)) &&
                 message.ValueKind == JsonValueKind.String) raw = message.GetString();
         }
         catch (JsonException) { }

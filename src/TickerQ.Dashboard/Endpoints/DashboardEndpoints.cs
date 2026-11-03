@@ -404,6 +404,16 @@ public static class DashboardEndpoints
             }, Json(context));
         }
 
+        // The configured store cannot do this, which is not a fault: say so rather than report a 500.
+        if (exception is NotSupportedException notSupported)
+        {
+            context.Response.StatusCode = StatusCodes.Status501NotImplemented;
+            return WriteJson(context, new ErrorResponseBody
+            {
+                Error = notSupported.Message,
+            }, Json(context));
+        }
+
         context.RequestServices
             .GetService<ILoggerFactory>()?
             .CreateLogger(typeof(DashboardEndpoints).FullName!)
@@ -976,6 +986,9 @@ public static class DashboardEndpoints
         where TCronTicker : CronTickerEntity, new()
     {
         var ok = DataService<TTimeTicker, TCronTicker>(c).CancelTicker(id);
+        if (ok)
+            c.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("TickerQ.Dashboard")
+                .LogInformation("Dashboard requested cancellation of running ticker {TickerId}", id);
         c.Response.StatusCode = ok ? 204 : 404;
         return Task.CompletedTask;
     }
@@ -1032,7 +1045,11 @@ public static class DashboardEndpoints
             .RequestRunningTickerCancellationAsync(id, type, c.RequestAborted);
         c.Response.StatusCode = requested ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict;
         if (requested)
+        {
+            c.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("TickerQ.Dashboard")
+                .LogInformation("Dashboard requested cancellation of running {TickerType} {TickerId}", type, id);
             await WriteJson(c, new CancellationResponseBody { Outcome = "Requested", Affected = 1 }, Json(c));
+        }
         else
             await WriteJson(c, new ErrorResponseBody
             {
@@ -1140,6 +1157,9 @@ public static class DashboardEndpoints
             if (dataService.CancelTicker(id))
                 cancelled++;
         }
+        if (cancelled > 0)
+            c.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("TickerQ.Dashboard")
+                .LogInformation("Dashboard requested cancellation of {Count} running ticker(s)", cancelled);
 
         await WriteJson(c, new BulkActionResponseBody { Affected = cancelled }, Json(c));
     }
@@ -1648,7 +1668,8 @@ public static class DashboardEndpoints
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        var body = c.Request.ContentLength is > 0
+        // The body is optional. A streamed request carries no Content-Length, so read any JSON body.
+        var body = c.Request.HasJsonContentType()
             ? await ReadJsonAsync<DuplicateTimeTickerRequest>(c, Json(c))
             : null;
 

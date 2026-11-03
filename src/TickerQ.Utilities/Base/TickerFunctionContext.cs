@@ -27,10 +27,13 @@ public class TickerFunctionContext<TRequest> : TickerFunctionContext
         IsDue = tickerFunctionContext.IsDue;
         ScheduledFor = tickerFunctionContext.ScheduledFor;
         RequestCancelOperationAction = tickerFunctionContext.RequestCancelOperationAction;
+        CancellationSource = tickerFunctionContext.CancellationSource;
         FunctionName = tickerFunctionContext.FunctionName;
         IsTestRun = tickerFunctionContext.IsTestRun;
         RequestPayload = tickerFunctionContext.RequestPayload;
         ProgressReporter = tickerFunctionContext.ProgressReporter;
+        ProgressTarget = tickerFunctionContext.ProgressTarget;
+        ProgressState = tickerFunctionContext.ProgressState;
         // Result state is shared by reference with the originating base context so a
         // SetResult call on this typed wrapper reaches the single sink the runtime reads,
         // and the direct parent's committed result stays readable through this wrapper.
@@ -47,6 +50,11 @@ public class TickerFunctionContext
     internal Action RequestCancelOperationAction { get; set; }
     internal byte[] RequestPayload { get; set; }
     internal Func<double, string, CancellationToken, Task> ProgressReporter { get; set; }
+    /// <summary>The execution's own source; <see cref="RequestCancellation"/> cancels it directly.</summary>
+    internal CancellationTokenSource CancellationSource { get; set; }
+    /// <summary>A shared progress sink and the per-execution state it reports for.</summary>
+    internal ITickerProgressReporter ProgressTarget { get; set; }
+    internal object ProgressState { get; set; }
     public Guid Id { get; internal set; }
     /// <summary>Persistence acquisition generation used only by remote transports for fencing.</summary>
     internal Guid? AcquisitionToken { get; set; }
@@ -95,7 +103,9 @@ public class TickerFunctionContext
         if (message?.Length > 500)
             throw new ArgumentOutOfRangeException(nameof(message), "Progress messages cannot exceed 500 characters.");
 
-        return ProgressReporter?.Invoke(percent, message, cancellationToken) ?? Task.CompletedTask;
+        return ProgressReporter?.Invoke(percent, message, cancellationToken)
+               ?? ProgressTarget?.ReportAsync(ProgressState, percent, message, cancellationToken)
+               ?? Task.CompletedTask;
     }
 
     /// <summary>
@@ -117,7 +127,12 @@ public class TickerFunctionContext
     public bool HasParentResult => ParentResultEnvelope != null;
 
     public void RequestCancellation()
-        => RequestCancelOperationAction();
+    {
+        if (CancellationSource != null)
+            TickerCancellationTokenManager.RequestCancellation(CancellationSource, TickerCancellationCause.Function);
+        else
+            RequestCancelOperationAction();
+    }
     internal void SetServiceScope(AsyncServiceScope serviceScope)
         => ServiceScope = serviceScope;
 
@@ -230,4 +245,10 @@ public class TickerFunctionContext
         ParentResultEnvelope.EnsureSupportedVersion();
         return ParentResultEnvelope;
     }
+}
+
+/// <summary>Reports progress for the execution identified by <c>state</c>, without a per-execution closure.</summary>
+internal interface ITickerProgressReporter
+{
+    Task ReportAsync(object state, double percent, string message, CancellationToken cancellationToken);
 }

@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -347,8 +348,10 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             catch (Exception exception) when (!cancellationToken.IsCancellationRequested &&
                 attempt + 1 < maxAttempts && ShouldRetryMutationTransaction(exception, commitStarted))
             {
+                // Full jitter: serialization conflicts are short, so a fixed floor would make every
+                // abort cost at least the floor while the contending transaction has long committed.
                 var maximumDelayMs = Math.Min(1000, 25 * (1 << Math.Min(attempt, 6)));
-                await Task.Delay(Random.Shared.Next(25, maximumDelayMs + 1), cancellationToken)
+                await Task.Delay(Random.Shared.Next(1, maximumDelayMs + 1), cancellationToken)
                     .ConfigureAwait(false);
             }
         }
@@ -841,9 +844,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
     private static void ValidateSuccessfulCommit(InternalFunctionContext context)
     {
         if (context == null) throw new ArgumentNullException(nameof(context));
-        if (!context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+        if (!context.IsPropertyTracked(nameof(InternalFunctionContext.Status)) ||
             context.Status is not (TickerStatus.Done or TickerStatus.DueDone) ||
-            !context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope)))
+            !context.IsPropertyTracked(nameof(InternalFunctionContext.ResultEnvelope)))
             throw new InvalidOperationException(
                 "Atomic result persistence accepts only a successful terminal mutation with an explicit optional result envelope.");
     }
@@ -1071,7 +1074,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 using var operationSession = await CreateDbContextAsync(ct).ConfigureAwait(false);
                 var dbContext = operationSession.Context;
                 await using var transaction = await dbContext.Database
-                    .BeginTransactionAsync(IsolationLevel.Serializable, ct).ConfigureAwait(false);
+                    .BeginTransactionAsync(TerminalCommitIsolation(dbContext), ct).ConfigureAwait(false);
                 var now = _clock.UtcNow;
                 int affected;
                 if (functionContext.Type == TickerType.CronTickerOccurrence)
@@ -1134,6 +1137,18 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             }, cancellationToken).ConfigureAwait(false);
     }
 
+    // Every statement of a terminal commit is a conditional write on one row: the node's own
+    // compare-and-set, the root generation lock for a child, and the result rows written only after
+    // that compare-and-set won. PostgreSQL re-checks an UPDATE's predicate against the latest
+    // committed row under its row lock, so Read Committed keeps each guard exact, while Serializable
+    // adds index-page read tracking that aborts unrelated completions committing together. Other
+    // providers keep Serializable (MySQL rejects Read Committed writes under statement binlogs).
+    private static IsolationLevel TerminalCommitIsolation(TDbContext dbContext)
+        => string.Equals(dbContext.Database.ProviderName, "Npgsql.EntityFrameworkCore.PostgreSQL",
+            StringComparison.Ordinal)
+            ? IsolationLevel.ReadCommitted
+            : IsolationLevel.Serializable;
+
     protected internal virtual Task OnSuccessfulStatusWrittenForTestAsync(
         TDbContext dbContext, InternalFunctionContext functionContext, CancellationToken cancellationToken)
         => Task.CompletedTask;
@@ -1189,10 +1204,10 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
     {
         ArgumentNullException.ThrowIfNull(functionContext);
         var successful = functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
-        if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+        if (!functionContext.IsPropertyTracked(nameof(InternalFunctionContext.Status)) ||
             functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                 or TickerStatus.Cancelled or TickerStatus.Skipped) ||
-            (successful && !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope))))
+            (successful && !functionContext.IsPropertyTracked(nameof(InternalFunctionContext.ResultEnvelope))))
             throw new InvalidOperationException(
                 "Acknowledged persistence accepts only a terminal mutation; success requires an explicit optional result envelope.");
     }
@@ -1263,7 +1278,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
 
     private static byte[] ComputeTerminalMutationDigest(InternalFunctionContext context)
     {
-        var properties = context.GetPropsToUpdate();
+        var properties = context.TrackedProperties;
         using var stream = new MemoryStream();
         using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
         {
@@ -1548,6 +1563,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
                 .ExecuteUpdateAsync(setter => setter
                     .SetProperty(x => x.Status, TickerStatus.Cancelled)
+                    .SetProperty(x => x.ExceptionMessage, TickerCancellationReasons.PendingRequest)
                     .SetProperty(x => x.UpdatedAt, now)
                     .SetProperty(x => x.ExecutedAt, now)
                     .SetProperty(x => x.LockHolder, (string)null)
@@ -1579,7 +1595,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
 
     public Task<int> UpdateTimeTicker(InternalFunctionContext functionContexts, CancellationToken cancellationToken)
     {
-        var releasesToIdle = functionContexts.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+        var releasesToIdle = functionContexts.IsPropertyTracked(nameof(InternalFunctionContext.Status)) &&
                              functionContexts.Status == TickerStatus.Idle;
         if (!releasesToIdle)
             return UpdateTimeTickerInNewSessionAsync(functionContexts, cancellationToken);
@@ -1690,7 +1706,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             // Roots use acquisition ownership below; children are serialized above by
             // the authoritative root generation CAS.
             var writesRootIdle = functionContexts.ParentId == null &&
-                                 functionContexts.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+                                 functionContexts.IsPropertyTracked(nameof(InternalFunctionContext.Status)) &&
                                  functionContexts.Status == TickerStatus.Idle;
             if ((IsFencedTerminalWrite(functionContexts) && functionContexts.ParentId == null) || writesRootIdle)
                 query = functionContexts.AcquisitionToken.HasValue
@@ -1753,15 +1769,15 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
     /// discarded if this node lost its lease while paused (fenced on LockHolder).
     /// </summary>
     protected static bool IsFencedTerminalWrite(InternalFunctionContext functionContext)
-        => functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ReleaseLock)) ||
-           (functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+        => functionContext.IsPropertyTracked(nameof(InternalFunctionContext.ReleaseLock)) ||
+           (functionContext.IsPropertyTracked(nameof(InternalFunctionContext.Status)) &&
             functionContext.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                 or TickerStatus.Cancelled or TickerStatus.Skipped);
         
     public async Task UpdateTimeTickersWithUnifiedContext(Guid[] timeTickerIds, InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
     {
         var idList = timeTickerIds.ToList();
-        var writesIdle = functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+        var writesIdle = functionContext.IsPropertyTracked(nameof(InternalFunctionContext.Status)) &&
                          functionContext.Status == TickerStatus.Idle;
         if (writesIdle)
         {
@@ -1810,21 +1826,62 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         {
             var context = dbContext.Set<TTimeTicker>();
             var now = _clock.UtcNow;
+            var leaseUntil = NextLeaseUntil(now);
             var winners = new List<Guid>(leases.Count);
-            foreach (var lease in leases.Where(x => x.AcquisitionToken.HasValue).Distinct())
+            var pending = leases.Where(x => x.AcquisitionToken.HasValue).Distinct().ToArray();
+            // Set-based per chunk: one SELECT of the rows this acquisition still holds Queued, then
+            // one UPDATE of exactly those rows under the same predicate, instead of a round trip per
+            // row. Inside the serializable admission transaction a concurrent change to a candidate
+            // fails the UPDATE (or the commit) and the whole transition is replayed.
+            for (var offset = 0; offset < pending.Length; offset += TransitionChunkSize)
             {
-                var affected = await context
+                var chunk = new ArraySegment<AcquisitionLease>(pending, offset,
+                    Math.Min(TransitionChunkSize, pending.Length - offset));
+                var held = context
                     .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                                x.Id == lease.TickerId && x.Status == TickerStatus.Queued &&
-                                x.LockHolder == _lockHolder && x.AcquisitionToken == lease.AcquisitionToken)
+                                x.Status == TickerStatus.Queued && x.LockHolder == _lockHolder)
+                    .Where(HeldUnderLease(chunk));
+                var candidates = await held.Select(x => x.Id).ToListAsync(ct).ConfigureAwait(false);
+                if (candidates.Count == 0) continue;
+                var affected = await held
+                    .Where(EfPredicateBuilder.ContainsAsParameters<TTimeTicker, Guid>(candidates, x => x.Id))
                     .ExecuteUpdateAsync(setter => setter
                         .SetProperty(x => x.Status, TickerStatus.InProgress)
-                        .SetProperty(x => x.LeaseUntil, NextLeaseUntil(now))
+                        .SetProperty(x => x.LeaseUntil, leaseUntil)
                         .SetProperty(x => x.UpdatedAt, now), ct).ConfigureAwait(false);
-                if (affected == 1) winners.Add(lease.TickerId);
+                if (affected != candidates.Count)
+                    throw new DbUpdateConcurrencyException(
+                        "Queued time tickers changed during their InProgress transition; the transition is replayed.");
+                winners.AddRange(candidates);
             }
             return winners.ToArray();
         }, cancellationToken).ConfigureAwait(false);
+    }
+
+    // Bounded so one statement stays well inside every provider's expression and parameter limits.
+    private const int TransitionChunkSize = 256;
+
+    // (Id, AcquisitionToken) pairs as scalar parameters, padded like EfPredicateBuilder.ContainsAsParameters
+    // so every batch of a given size shares one compiled query and database plan.
+    private static Expression<Func<TTimeTicker, bool>> HeldUnderLease(IReadOnlyList<AcquisitionLease> leases)
+    {
+        var row = Expression.Parameter(typeof(TTimeTicker), "x");
+        var id = Expression.Property(row, nameof(TimeTickerEntity.Id));
+        var token = Expression.Property(row, nameof(TimeTickerEntity.AcquisitionToken));
+        var ids = new Guid[leases.Count];
+        var tokens = new Guid?[leases.Count];
+        for (var i = 0; i < leases.Count; i++)
+        {
+            ids[i] = leases[i].TickerId;
+            tokens[i] = leases[i].AcquisitionToken;
+        }
+        var idSlots = ParameterSlots<Guid>.Padded(ids);
+        var tokenSlots = ParameterSlots<Guid?>.Padded(tokens);
+        return Expression.Lambda<Func<TTimeTicker, bool>>(
+            EfPredicateBuilder.OrTree(idSlots.Values.Length, i => Expression.AndAlso(
+                Expression.Equal(id, idSlots.Slot(i)),
+                Expression.Equal(token, tokenSlots.Slot(i)))),
+            row);
     }
 
     public async Task<TimeTickerEntity[]> GetEarliestTimeTickers(CancellationToken cancellationToken)
@@ -2723,7 +2780,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
     #region Core_Cron_TickerOccurrence_Methods
     public Task UpdateCronTickerOccurrence(InternalFunctionContext functionContext, CancellationToken cancellationToken)
     {
-        var releasesToIdle = functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+        var releasesToIdle = functionContext.IsPropertyTracked(nameof(InternalFunctionContext.Status)) &&
                              functionContext.Status == TickerStatus.Idle;
         return releasesToIdle
             ? UpdateCronTickerOccurrenceWithAdmissionAsync(functionContext, cancellationToken)
@@ -2758,7 +2815,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
 
         // Fencing: see UpdateTimeTicker. Occurrences are always lock-held by the
         // executing node, so every terminal write is fenced.
-        var writesIdle = functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+        var writesIdle = functionContext.IsPropertyTracked(nameof(InternalFunctionContext.Status)) &&
                          functionContext.Status == TickerStatus.Idle;
         if (IsFencedTerminalWrite(functionContext) || writesIdle)
             query = functionContext.AcquisitionToken.HasValue
@@ -3097,7 +3154,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         var query = dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
             .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
             .Where(EfPredicateBuilder.Contains<CronTickerOccurrenceEntity<TCronTicker>, Guid>(idList, x => x.Id));
-        if (functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+        if (functionContext.IsPropertyTracked(nameof(InternalFunctionContext.Status)) &&
             functionContext.Status == TickerStatus.Idle)
             query = functionContext.AcquisitionToken.HasValue
                 ? query.Where(x => x.LockHolder == _lockHolder &&

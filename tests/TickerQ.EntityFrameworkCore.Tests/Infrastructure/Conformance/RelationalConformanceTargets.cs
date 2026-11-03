@@ -204,10 +204,15 @@ internal sealed class ConformanceDatabase : IAsyncDisposable
         return builder.Options;
     }
 
-    public static async Task<ConformanceDatabase> CreateAsync(RelationalConformanceTarget target, bool createTables = true)
+    public static Task<ConformanceDatabase> CreateAsync(RelationalConformanceTarget target, bool createTables = true)
+        => CreateAsync(target,
+            RelationalConformanceTargets.AdminConnectionString(target)
+            ?? throw new InvalidOperationException($"{RelationalConformanceTargets.EnvironmentVariable(target)} is not set."),
+            createTables);
+
+    /// <summary>Creates the isolated database on the server <paramref name="admin"/> connects to as an administrator.</summary>
+    public static async Task<ConformanceDatabase> CreateAsync(RelationalConformanceTarget target, string admin, bool createTables)
     {
-        var admin = RelationalConformanceTargets.AdminConnectionString(target)
-            ?? throw new InvalidOperationException($"{RelationalConformanceTargets.EnvironmentVariable(target)} is not set.");
         var name = "tqconf" + Guid.NewGuid().ToString("N")[..12];
         var factory = RelationalConformanceTargets.Factory(target);
         var builder = factory.CreateConnectionStringBuilder()!;

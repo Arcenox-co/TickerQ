@@ -162,7 +162,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             InternalFunctionContext functionContext, DateTime? leaseUntil = null)
             where TCronTicker : CronTickerEntity, new()
         {
-            var propsToUpdate = functionContext.GetPropsToUpdate();
+            var propsToUpdate = functionContext.TrackedProperties;
 
             // Terminal transitions always release the execution lease. Non-terminal root
             // occurrences stamp a lease on InProgress so stale recovery can detect owner loss.
@@ -250,7 +250,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         /// True when the context writes a terminal status — the writes after which a row's
         /// acquisition generation must be cleared (it is no longer InProgress under any owner).
         /// </summary>
-        internal static bool WritesTerminalStatus(InternalFunctionContext functionContext, System.Collections.Generic.HashSet<string> propsToUpdate)
+        internal static bool WritesTerminalStatus(InternalFunctionContext functionContext, TrackedPropertySet propsToUpdate)
             => propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
                functionContext.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                    or TickerStatus.Cancelled or TickerStatus.Skipped;
@@ -260,7 +260,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         /// the time-ticker and cron-occurrence setters (and mirrored by the Mongo builders).
         /// </summary>
         private static void ApplyAcquisitionToken<TSetter>(
-            System.Collections.Generic.HashSet<string> propsToUpdate,
+            TrackedPropertySet propsToUpdate,
             InternalFunctionContext functionContext,
             Action<TSetter, Guid?> apply,
             TSetter setter)
@@ -282,7 +282,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             InternalFunctionContext functionContext, DateTime updatedAt, DateTime? leaseUntil = null)
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         {
-            var propsToUpdate = functionContext.GetPropsToUpdate();
+            var propsToUpdate = functionContext.TrackedProperties;
 
             // Chain children execute under the root aggregate lease and must never mint an
             // independently recoverable lease. Every terminal transition clears legacy leases,

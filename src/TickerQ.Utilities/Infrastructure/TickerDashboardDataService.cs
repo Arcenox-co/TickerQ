@@ -118,9 +118,15 @@ namespace TickerQ.Utilities.Infrastructure
             if (!string.IsNullOrWhiteSpace(filter.Search))
             {
                 var search = filter.Search;
-                query = query.Where(x =>
-                    (x.Function != null && x.Function.Contains(search)) ||
-                    (x.Description != null && x.Description.Contains(search)));
+                if (TryParseSearchId(search, out var searchedId))
+                {
+                    var rootId = (await ReadTimeChainRootAsync(searchedId, cancellationToken).ConfigureAwait(false))?.Id ?? searchedId;
+                    query = query.Where(x => x.Id == rootId);
+                }
+                else
+                    query = query.Where(x =>
+                        (x.Function != null && x.Function.Contains(search)) ||
+                        (x.Description != null && x.Description.Contains(search)));
             }
 
             query = ApplyTimeTickerSort(query, filter.SortBy, filter.SortDescending);
@@ -136,9 +142,7 @@ namespace TickerQ.Utilities.Infrastructure
         public async Task<TimeTickerFlatDto> GetTimeTickerByIdAsync(
             Guid id, CancellationToken cancellationToken = default)
         {
-            var entity = DashboardTimeSource() is ITickerProjectionQueryable<TTimeTicker> { SupportsProjection: true }
-                ? await ChainMetadataQuery().Where(x => x.Id == id).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false)
-                : await _persistence.GetTimeTickerById(id, cancellationToken).ConfigureAwait(false);
+            var entity = await ReadTimeMetadataAsync(id, cancellationToken).ConfigureAwait(false);
             if (entity == null) return null;
             var item = MapTimeTicker(entity);
             await PopulateTimeChainSummariesAsync(new[] { item }, cancellationToken).ConfigureAwait(false);
@@ -205,10 +209,16 @@ namespace TickerQ.Utilities.Infrastructure
             if (!string.IsNullOrWhiteSpace(filter.Search))
             {
                 var search = filter.Search;
-                query = query.Where(x =>
-                    (x.Function != null && x.Function.Contains(search)) ||
-                    (x.Expression != null && x.Expression.Contains(search)) ||
-                    (x.Description != null && x.Description.Contains(search)));
+                if (TryParseSearchId(search, out var searchedId))
+                {
+                    var cronId = await ReadOwningCronIdAsync(searchedId, cancellationToken).ConfigureAwait(false) ?? searchedId;
+                    query = query.Where(x => x.Id == cronId);
+                }
+                else
+                    query = query.Where(x =>
+                        (x.Function != null && x.Function.Contains(search)) ||
+                        (x.Expression != null && x.Expression.Contains(search)) ||
+                        (x.Description != null && x.Description.Contains(search)));
             }
 
             query = ApplyCronTickerSort(query, filter.SortBy, filter.SortDescending);
@@ -351,9 +361,16 @@ namespace TickerQ.Utilities.Infrastructure
             if (!string.IsNullOrWhiteSpace(filter.Search))
             {
                 var search = filter.Search;
-                all = all.Where(x =>
-                    (x.FunctionName != null && x.FunctionName.Contains(search)) ||
-                    (x.ExceptionMessage != null && x.ExceptionMessage.Contains(search))).ToList();
+                if (TryParseSearchId(search, out var searchedId))
+                {
+                    // An execution, a chain step (through its root), or a cron ticker's runs.
+                    var rootId = (await ReadTimeChainRootAsync(searchedId, cancellationToken).ConfigureAwait(false))?.Id ?? searchedId;
+                    all = all.Where(x => x.Id == searchedId || x.Id == rootId || x.CronTickerId == searchedId).ToList();
+                }
+                else
+                    all = all.Where(x =>
+                        (x.FunctionName != null && x.FunctionName.Contains(search)) ||
+                        (x.ExceptionMessage != null && x.ExceptionMessage.Contains(search))).ToList();
             }
 
             var sorted = ApplyExecutionSort(all, filter.SortBy, filter.SortDescending);

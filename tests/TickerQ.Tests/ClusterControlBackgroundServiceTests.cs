@@ -95,14 +95,41 @@ public sealed class ClusterControlBackgroundServiceTests
         Status = TickerQControlCommandStatus.Pending
     };
 
+    [Fact]
+    public async Task Heartbeat_ReportsTheSchedulerStarting_AtTheNextPoll_NotTheNextHeartbeat()
+    {
+        var now = new DateTime(2026, 10, 20, 12, 0, 0, DateTimeKind.Utc);
+        var store = Substitute.For<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>();
+        store.SupportsClusterControl.Returns(true);
+        var running = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        store.UpsertNodeAsync(Arg.Do<TickerQNodeRecord>(node => { if (node.IsRunning) running.TrySetResult(); }),
+            Arg.Any<CancellationToken>()).Returns(Task.CompletedTask);
+        var scheduler = Substitute.For<ITickerQHostScheduler>();
+        scheduler.IsRunning.Returns(false);
+        // The clock stands still, so no regular heartbeat falls due during the test.
+        using var service = Service(store, new SchedulerOptionsBuilder { NodeIdentifier = "worker-a" }, now, scheduler);
+
+        // Hosted services start in order: this one writes its first heartbeat before the scheduler runs.
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            scheduler.IsRunning.Returns(true);
+            await running.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
     private static TickerQClusterControlBackgroundService<TimeTickerEntity, CronTickerEntity> Service(
         ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity> store,
-        SchedulerOptionsBuilder options, DateTime now)
+        SchedulerOptionsBuilder options, DateTime now, ITickerQHostScheduler scheduler = null)
     {
         var clock = Substitute.For<ITickerClock>();
         clock.UtcNow.Returns(now);
         return new TickerQClusterControlBackgroundService<TimeTickerEntity, CronTickerEntity>(
-            store, Substitute.For<ITickerQTaskScheduler>(), Substitute.For<ITickerQHostScheduler>(),
+            store, Substitute.For<ITickerQTaskScheduler>(), scheduler ?? Substitute.For<ITickerQHostScheduler>(),
             options, clock,
             NullLogger<TickerQClusterControlBackgroundService<TimeTickerEntity, CronTickerEntity>>.Instance);
     }

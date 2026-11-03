@@ -3,10 +3,11 @@ using Microsoft.Extensions.Logging;
 using TickerQ.Caching.StackExchangeRedis.DependencyInjection;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Infrastructure;
 
 namespace TickerQ.Caching.StackExchangeRedis;
 
-internal class NodeHeartBeatBackgroundService : BackgroundService
+internal class NodeHeartBeatBackgroundService : TickerQBackgroundService
 {
     private int _started;
     private readonly ITickerQRedisContext _context;
@@ -18,6 +19,7 @@ internal class NodeHeartBeatBackgroundService : BackgroundService
     public NodeHeartBeatBackgroundService(ServiceExtension.TickerQRedisOptionBuilder schedulerOptionsBuilder,
         ITickerQRedisContext context, IInternalTickerManager internalTickerManager,
         ILogger<NodeHeartBeatBackgroundService> logger, ITickerQActivationGate activationGate)
+        : base(logger)
     {
         _context = context;
         _internalTickerManager = internalTickerManager;

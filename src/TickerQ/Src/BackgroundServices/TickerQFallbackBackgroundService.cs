@@ -13,7 +13,7 @@ using TickerQ.Utilities.Licensing;
 
 namespace TickerQ.BackgroundServices;
 
-internal class TickerQFallbackBackgroundService :  BackgroundService
+internal class TickerQFallbackBackgroundService : TickerQBackgroundService
 {
     private int _started;
     private readonly IInternalTickerManager _internalTickerManager;
@@ -30,6 +30,7 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
 
     public TickerQFallbackBackgroundService(IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerExecutionTaskHandler tickerExecutionTaskHandler, ITickerQTaskScheduler tickerQTaskScheduler, TickerQLicenseStateProvider licenseState, ITickerQActivationGate activationGate = null,
         ILogger<TickerQFallbackBackgroundService> logger = null, TickerQRuntimeDiagnostics diagnostics = null, AcquiredExecutionQueue acquiredQueue = null)
+        : base(logger ?? (ILogger)NullLogger.Instance)
     {
         _internalTickerManager = internalTickerManager;
         _fallbackJobPeriod = schedulerOptions.FallbackIntervalChecker;

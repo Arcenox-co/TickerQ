@@ -20,25 +20,33 @@ public abstract class TickerQBaseLoggerInstrumentation
 
     public abstract Activity? StartJobActivity(string activityName, InternalFunctionContext context);
 
+    // These run for every execution. The params-object[] logging overloads allocate the array and
+    // box each value before the logger checks its level, so the per-execution ones check first,
+    // and the success tag is boxed once.
+    private static readonly System.Collections.Generic.KeyValuePair<string, object> SucceededTag = new("tickerq.success", true);
+    private static readonly System.Collections.Generic.KeyValuePair<string, object> FailedTag = new("tickerq.success", false);
+
     public virtual void LogJobEnqueued(string jobType, string functionName, Guid jobId, string? enqueuedFrom = null)
     {
         TickerQMetrics.JobsEnqueued.Add(1, TickerQMetrics.FunctionTag(functionName));
+        if (!_logger.IsEnabled(LogLevel.Information)) return;
         _logger.LogInformation("TickerQ Job enqueued: {JobType} - {Function} ({JobId}) from {EnqueuedFrom}",
             jobType, functionName, jobId, enqueuedFrom ?? "Unknown");
     }
 
     public virtual void LogJobStarted(Guid jobId, string functionName, string jobType)
     {
+        if (!_logger.IsEnabled(LogLevel.Information)) return;
         _logger.LogInformation("TickerQ Job started: {JobType} - {Function} ({JobId})",
             jobType, functionName, jobId);
     }
 
     public virtual void LogJobCompleted(Guid jobId, string functionName, long executionTimeMs, bool success)
     {
-        TickerQMetrics.JobsCompleted.Add(1, TickerQMetrics.FunctionTag(functionName),
-            new System.Collections.Generic.KeyValuePair<string, object>("tickerq.success", success));
-        TickerQMetrics.JobDuration.Record(executionTimeMs, TickerQMetrics.FunctionTag(functionName),
-            new System.Collections.Generic.KeyValuePair<string, object>("tickerq.success", success));
+        var successTag = success ? SucceededTag : FailedTag;
+        TickerQMetrics.JobsCompleted.Add(1, TickerQMetrics.FunctionTag(functionName), successTag);
+        TickerQMetrics.JobDuration.Record(executionTimeMs, TickerQMetrics.FunctionTag(functionName), successTag);
+        if (!_logger.IsEnabled(LogLevel.Information)) return;
         _logger.LogInformation("TickerQ Job completed: {Function} ({JobId}) in {ExecutionTime}ms - Success: {Success}",
             functionName, jobId, executionTimeMs, success);
     }
@@ -85,6 +93,7 @@ public abstract class TickerQBaseLoggerInstrumentation
     public virtual void LogJobCancelled(Guid jobId, string functionName, string reason)
     {
         TickerQMetrics.JobsCancelled.Add(1, TickerQMetrics.FunctionTag(functionName));
+        if (!_logger.IsEnabled(LogLevel.Warning)) return;
         _logger.LogWarning("TickerQ Job cancelled: {Function} ({JobId}) - {Reason}",
             functionName, jobId, reason);
     }
@@ -92,6 +101,7 @@ public abstract class TickerQBaseLoggerInstrumentation
     public virtual void LogJobSkipped(Guid jobId, string functionName, string reason)
     {
         TickerQMetrics.JobsSkipped.Add(1, TickerQMetrics.FunctionTag(functionName));
+        if (!_logger.IsEnabled(LogLevel.Information)) return;
         _logger.LogInformation("TickerQ Job skipped: {Function} ({JobId}) - {Reason}", functionName, jobId, reason);
     }
     

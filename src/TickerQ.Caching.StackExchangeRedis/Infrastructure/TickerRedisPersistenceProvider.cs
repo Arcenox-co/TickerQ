@@ -49,8 +49,10 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
     }
 
     private static readonly string UpdateTimeTickerConfigurationScript = LuaScriptLoader.Load("UpdateTimeTickerConfiguration");
-    private static readonly string AddTimeTickerOnceScript = LuaScriptLoader.Load("AddTimeTickerOnce");
-    private static readonly string DeleteTimeTickerScript = LuaScriptLoader.Load("DeleteTimeTicker");
+    private static readonly string AddTimeTickerOnceScript = LuaScriptLoader.Load("AddTimeTickerOnce", "RuntimeAdmission");
+    private static readonly string DeleteTimeTickerScript = LuaScriptLoader.Load("DeleteTimeTicker", "TimeTickerAggregateSafety");
+    private static readonly string ReplaceTimeTickerChainScript =
+        LuaScriptLoader.Load("ReplaceTimeTickerChain", "TimeTickerAggregateSafety", "RuntimeAdmission");
     private static readonly string SetChainDeleteBehaviorScript = LuaScriptLoader.Load("SetChainDeleteBehavior");
     private static readonly string RetryTimeTickerChainScript = LuaScriptLoader.Load("RetryTimeTickerChain");
     private static readonly string AcquireCronOccurrenceOnDemandScript =
@@ -464,12 +466,102 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
         var count = 0;
         foreach (var id in tickerIds)
         {
+            if (await RemoveTimeTickerAsync(id, cancellationToken).ConfigureAwait(false))
+                count++;
+        }
+        return count;
+    }
+
+    // A chain is one document, so replacing it is one script: the original is removed and the new
+    // aggregate published together, or neither happens. Cluster keys do not share a hash slot.
+    public bool SupportsTimeTickerChainReplacement => !IsClusterTopology(Db);
+
+    public async Task<int> ReplaceTimeTickerChainAsync(Guid oldRootId, TTimeTicker newRoot,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(newRoot);
+        if (!SupportsTimeTickerChainReplacement)
+            throw new NotSupportedException(
+                "Atomic time-ticker chain replacement requires standalone Redis: on Redis Cluster the old and new chain keys do not share one hash slot.");
+        if (RuntimeAdmissionMisconfigured) return 0;
+
+        ResetReplacementRunState(newRoot);
+        NormalizeAggregate(newRoot, newRoot.Id, null);
+        var now = Clock.UtcNow;
+        newRoot.CreatedAt = newRoot.CreatedAt == default ? now : newRoot.CreatedAt;
+        newRoot.UpdatedAt = newRoot.UpdatedAt == default ? now : newRoot.UpdatedAt;
+        var pendingScore = newRoot.ExecutionTime.HasValue && CanAcquire(newRoot.Status, newRoot.LockHolder, LockHolder)
+            ? ToScore(newRoot.ExecutionTime.Value).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : string.Empty;
+        var replacementJson = Serializer.Serialize(newRoot);
+
+        for (var attempt = 0; attempt < 64; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var currentJson = await Db.StringGetAsync(TimeTickerKey(oldRootId)).ConfigureAwait(false);
+            var original = currentJson.IsNullOrEmpty
+                ? null
+                : Serializer.DeserializeOrNull<TTimeTicker>(currentJson.ToString());
+            if (original == null || original.ParentId.HasValue) return 0;
+
+            var originalIds = EnumerateAggregateIds(original).Distinct().ToArray();
+            var keys = new List<RedisKey>
+            {
+                TimeTickerKey(oldRootId), TimeTickerKey(newRoot.Id), TimeTickerIdsKey, TimeTickerPendingKey,
+                RuntimeActivationMetadataKey, TerminalMutationEvidenceKey
+            };
+            keys.AddRange(originalIds.Select(TimeTickerResultKey).Select(x => (RedisKey)x));
+            var arguments = new List<RedisValue>
+            {
+                oldRootId.ToString(), currentJson, now.ToString("O"), (int)TickerStatus.InProgress,
+                newRoot.Id.ToString(), replacementJson, pendingScore, RuntimeActivationEpoch, RuntimeAdmissionMode
+            };
+            arguments.AddRange(originalIds.Select(id => (RedisValue)$"{(int)TickerType.TimeTicker}:{id:D}"));
+            var replaced = (long)await Db.ScriptEvaluateAsync(
+                ReplaceTimeTickerChainScript, keys.ToArray(), arguments.ToArray()).ConfigureAwait(false);
+            if (replaced == -2) continue;
+            if (replaced != 1) return 0;
+
+            await IndexManager.AddTimeTickerIndexesAsync(newRoot).ConfigureAwait(false);
+            return EnumerateAggregateIds(newRoot).Count();
+        }
+        throw new InvalidOperationException("The chain kept changing during replacement. Retry the edit.");
+    }
+
+    // A replacement is a new, unstarted chain whatever state the request carried.
+    private static void ResetReplacementRunState(TTimeTicker root)
+    {
+        var pending = new Stack<TTimeTicker>();
+        pending.Push(root);
+        while (pending.TryPop(out var node))
+        {
+            node.Status = TickerStatus.Idle;
+            node.LockHolder = null;
+            node.LockedAt = null;
+            node.LeaseUntil = null;
+            node.AcquisitionToken = null;
+            node.ExecutedAt = null;
+            node.ExceptionMessage = null;
+            node.SkippedReason = null;
+            node.ElapsedTime = 0;
+            node.RetryCount = 0;
+            node.StaleRestartCount = 0;
+            foreach (var child in node.Children ?? []) pending.Push(child);
+        }
+    }
+
+    // The script deletes only the document it was given, so a change between the read and the
+    // script (the scheduler claiming or releasing the job) is read again rather than reported as kept.
+    private async Task<bool> RemoveTimeTickerAsync(Guid id, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 64; attempt++)
+        {
             cancellationToken.ThrowIfCancellationRequested();
             var currentJson = await Db.StringGetAsync(TimeTickerKey(id)).ConfigureAwait(false);
             var ticker = currentJson.IsNullOrEmpty
                 ? null
                 : Serializer.DeserializeOrNull<TTimeTicker>(currentJson.ToString());
-            if (ticker == null) continue;
+            if (ticker == null) return false;
             var aggregateIds = ticker == null ? [id] : EnumerateAggregateIds(ticker).Distinct().ToArray();
             var keys = new List<RedisKey>
             {
@@ -482,12 +574,11 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
             };
             arguments.AddRange(aggregateIds.Select(entityId =>
                 (RedisValue)$"{(int)TickerType.TimeTicker}:{entityId:D}"));
-            var removed = await Db.ScriptEvaluateAsync(
+            var removed = (long)await Db.ScriptEvaluateAsync(
                 DeleteTimeTickerScript, keys.ToArray(), arguments.ToArray()).ConfigureAwait(false);
-            if ((long)removed == 1)
-                count++;
+            if (removed != -2) return removed == 1;
         }
-        return count;
+        throw new InvalidOperationException("The ticker kept changing during deletion. Retry the delete.");
     }
 
     private static IEnumerable<TTimeTicker> EnumerateAggregate(TTimeTicker root)

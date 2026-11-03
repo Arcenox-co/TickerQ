@@ -4,12 +4,13 @@ using TickerQ.Integrations.Infrastructure;
 using TickerQ.Utilities.Integrations;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
+using TickerQ.Utilities.Infrastructure;
 
 namespace TickerQ.Integrations.Monitoring;
 
 internal sealed class IntegrationMonitoringService(IntegrationConfigurationService configuration,
     MonitoringStateStore store, IMonitoringExecutionSource executions, IntegrationEngine engine,
-    IntegrationOptions options, ITickerClock clock, ILogger<IntegrationMonitoringService> logger) : BackgroundService
+    IntegrationOptions options, ITickerClock clock, ILogger<IntegrationMonitoringService> logger) : TickerQBackgroundService(logger)
 {
     private bool _catchingUp;
     protected override Task ExecuteAsync(CancellationToken stoppingToken)

@@ -308,7 +308,7 @@ export default function TimeTickersPage() {
             );
           })}
         </div>
-        <SearchInput value={search} onChange={setSearch} placeholder="Search by function…" />
+        <SearchInput value={search} onChange={setSearch} placeholder="Search by function or ID…" />
         <FilterPopover
           statusLabel="Root job status"
           statusFilter={statusFilter}

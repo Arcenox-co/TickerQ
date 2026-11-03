@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using TickerQ.Utilities.Models;
 using TickerQ.Utilities.Serialization;
 using TickerQ.Utilities.Infrastructure;
@@ -148,6 +150,17 @@ namespace TickerQ.Utilities
             {
                 var instance = document.RootElement;
 
+                // ---- Names that differ only by case bind to nothing, so the function would silently
+                // see defaults; schemas generated from the type allow unknown properties and cannot tell.
+                if (snapshot.RuntimeRequests.TryGetValue(functionName, out var bound) && bound.JsonTypeInfo != null)
+                {
+                    var mismatches = new List<TickerRequestValidationError>();
+                    FindCaseMismatches(instance, bound.JsonTypeInfo, "", 0, mismatches);
+                    if (mismatches.Count > 0)
+                        return TickerRequestValidationResult.Invalid(
+                            functionName, TickerRequestSchemaValidationState.NotApplicable, mismatches);
+                }
+
                 // ---- Full Draft 2020-12 schema validation when a schema exists.
                 var schemaState = TickerRequestSchemaValidationState.NotApplicable;
                 if (contract.Schema.HasValue)
@@ -204,6 +217,70 @@ namespace TickerQ.Utilities
                 return TickerRequestValidationResult.Valid(
                     functionName, value, schemaState, TickerRequestBindingValidationState.Enforced,
                     descriptor.ContractVersion, contract.Fingerprint);
+            }
+        }
+
+        private const int MaxCaseCheckDepth = 32;
+
+        private static void FindCaseMismatches(JsonElement element, JsonTypeInfo typeInfo, string location, int depth,
+            List<TickerRequestValidationError> mismatches)
+        {
+            if (depth > MaxCaseCheckDepth || typeInfo.Options.PropertyNameCaseInsensitive) return;
+
+            if (element.ValueKind == JsonValueKind.Object && typeInfo.Kind == JsonTypeInfoKind.Object)
+            {
+                foreach (var member in element.EnumerateObject())
+                {
+                    JsonPropertyInfo exact = null, caseOnly = null;
+                    foreach (var property in typeInfo.Properties)
+                    {
+                        if (string.Equals(property.Name, member.Name, StringComparison.Ordinal)) { exact = property; break; }
+                        if (caseOnly == null && string.Equals(property.Name, member.Name, StringComparison.OrdinalIgnoreCase))
+                            caseOnly = property;
+                    }
+
+                    var path = location + "/" + member.Name;
+                    if (exact == null && caseOnly != null)
+                        mismatches.Add(new TickerRequestValidationError(
+                            TickerRequestValidationErrorCode.PropertyNameCaseMismatch,
+                            $"Property '{member.Name}' does not match '{caseOnly.Name}'. Request property names are case-sensitive.",
+                            path));
+                    else if (exact != null && TryGetTypeInfo(typeInfo.Options, exact.PropertyType) is { } nested)
+                        FindCaseMismatches(member.Value, nested, path, depth + 1, mismatches);
+                }
+            }
+            else if (element.ValueKind == JsonValueKind.Array && typeInfo.Kind == JsonTypeInfoKind.Enumerable &&
+                     ElementTypeOf(typeInfo) is { } elementType && TryGetTypeInfo(typeInfo.Options, elementType) is { } item)
+            {
+                var index = 0;
+                foreach (var entry in element.EnumerateArray())
+                    FindCaseMismatches(entry, item, $"{location}/{index++}", depth + 1, mismatches);
+            }
+        }
+
+        private static Type ElementTypeOf(JsonTypeInfo typeInfo)
+        {
+#if NET9_0_OR_GREATER
+            return typeInfo.ElementType;
+#else
+            // The metadata exposes no element type before .NET 9. Arrays and single-argument generic
+            // collections (List<T> and the collection interfaces) cover request types; others are not checked.
+            var type = typeInfo.Type;
+            if (type.IsArray) return type.GetElementType();
+            return type.IsGenericType && type.GetGenericArguments() is { Length: 1 } arguments ? arguments[0] : null;
+#endif
+        }
+
+        // A source-generated context may not hold metadata for every nested type; those are not checked.
+        private static JsonTypeInfo TryGetTypeInfo(JsonSerializerOptions options, Type type)
+        {
+            try
+            {
+                return options.TryGetTypeInfo(type, out var typeInfo) ? typeInfo : null;
+            }
+            catch (NotSupportedException)
+            {
+                return null;
             }
         }
     }

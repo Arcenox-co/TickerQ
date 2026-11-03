@@ -7,10 +7,16 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.Tests;
 
+// Own entity types give this class its own static in-memory store, so its full reset cannot wipe the
+// default-type partitions that tests running in parallel are activating.
 public sealed class SchedulePolicyInMemoryStoreTests : IDisposable
 {
+    public sealed class PolicyTimeTicker : TimeTickerEntity<PolicyTimeTicker> { }
+
+    public sealed class PolicyCronTicker : CronTickerEntity { }
+
     public SchedulePolicyInMemoryStoreTests()
-        => TickerInMemoryPersistenceProvider<TimeTickerEntity, CronTickerEntity>.ResetAllStateForTests();
+        => TickerInMemoryPersistenceProvider<PolicyTimeTicker, PolicyCronTicker>.ResetAllStateForTests();
 
     [Fact]
     public async Task Crud_Is_Optimistic_And_Isolated_By_Application_Namespace()
@@ -37,13 +43,13 @@ public sealed class SchedulePolicyInMemoryStoreTests : IDisposable
     }
 
     public void Dispose()
-        => TickerInMemoryPersistenceProvider<TimeTickerEntity, CronTickerEntity>.ResetAllStateForTests();
+        => TickerInMemoryPersistenceProvider<PolicyTimeTicker, PolicyCronTicker>.ResetAllStateForTests();
 
     private static ISchedulePolicyStore CreateStore(string applicationNamespace)
     {
         var options = new SchedulerOptionsBuilder { ReconciliationEpoch = 1 };
         options.BindRuntimeActivationScope(applicationNamespace, 1, schedulerEnabled: false);
         var services = new ServiceCollection().AddSingleton(options).BuildServiceProvider();
-        return new TickerInMemoryPersistenceProvider<TimeTickerEntity, CronTickerEntity>(services);
+        return new TickerInMemoryPersistenceProvider<PolicyTimeTicker, PolicyCronTicker>(services);
     }
 }

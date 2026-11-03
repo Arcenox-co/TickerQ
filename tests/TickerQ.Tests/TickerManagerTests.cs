@@ -48,6 +48,7 @@ public partial class TickerManagerTests : IDisposable
     public TickerManagerTests()
     {
         _persistenceProvider = Substitute.For<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>();
+        _persistenceProvider.SupportsTimeTickerChainReplacement.Returns(true);
         _hostScheduler = Substitute.For<ITickerQHostScheduler>();
         _clock = Substitute.For<ITickerClock>();
         _notificationHubSender = Substitute.For<ITickerQNotificationHubSender>();
@@ -535,6 +536,20 @@ public partial class TickerManagerTests : IDisposable
         await _notificationHubSender.DidNotReceive().AddTimeTickerNotifyAsync(Arg.Any<Guid>());
         _hostScheduler.DidNotReceive().Restart();
         _hostScheduler.DidNotReceive().RestartIfNeeded(Arg.Any<DateTime>());
+    }
+
+    [Fact]
+    public async Task ReplaceChainAsync_OnAStoreThatCannotReplaceAtomically_RefusesBeforeTouchingIt()
+    {
+        _persistenceProvider.SupportsTimeTickerChainReplacement.Returns(false);
+        var oldRoot = new TimeTickerEntity { Id = Guid.NewGuid(), Function = ValidFunctionName };
+        _persistenceProvider.GetTimeTickerById(oldRoot.Id, Arg.Any<CancellationToken>()).Returns(oldRoot);
+
+        var result = await _timeTickerManager.ReplaceChainAsync(
+            oldRoot.Id, new TimeTickerEntity { Function = ValidFunctionName }, CancellationToken.None);
+
+        Assert.IsType<NotSupportedException>(result.Exception);
+        await _persistenceProvider.DidNotReceiveWithAnyArgs().ReplaceTimeTickerChainAsync(default, default!, default);
     }
 
     [Fact]

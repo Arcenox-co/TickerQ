@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Models;
@@ -12,6 +13,34 @@ namespace TickerQ.Utilities
         private static readonly ConcurrentDictionary<TickerExecutionKey, TickerCancellationTokenDetails> TickerCancellationTokens = new();
         private static readonly ConcurrentDictionary<TickerExecutionKey, ConcurrentHashSet<TickerExecutionKey>> ParentIdIndex = new();
         private static readonly object[] ParentIndexLocks = CreateParentIndexLocks();
+
+        // Sources cancelled by an explicit request — a user, the cluster, a lost lease, or the job
+        // itself — as opposed to a stopping node cancelling the work it admitted. The handler records
+        // a requested cancellation as Cancelled and hands stop-cancelled work back for another run.
+        private static readonly ConditionalWeakTable<CancellationTokenSource, object> RequestedSources = new();
+
+        internal static bool WasCancellationRequested(CancellationTokenSource source)
+            => source != null && RequestedSources.TryGetValue(source, out _);
+
+        internal static TickerCancellationCause? GetRequestedCause(CancellationTokenSource source)
+            => source != null && RequestedSources.TryGetValue(source, out var cause) ? (TickerCancellationCause)cause : null;
+
+        /// <summary>Records the request before cancelling, so any observer of the token sees it.</summary>
+        internal static void RequestCancellation(
+            CancellationTokenSource source, TickerCancellationCause cause = TickerCancellationCause.Request)
+        {
+            if (source == null) return;
+            // The first request names the cause; a later one only repeats the cancel.
+            RequestedSources.TryAdd(source, cause);
+            try
+            {
+                source.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Owner disposed it concurrently — the execution is already ending, safe to ignore.
+            }
+        }
 
         internal static void AddTickerCancellationToken(CancellationTokenSource cancellationSource, InternalFunctionContext context, bool isDue)
         {
@@ -292,15 +321,7 @@ namespace TickerQ.Utilities
             if (!TickerCancellationTokens.TryGetValue(key, out var details))
                 return false;
 
-            try
-            {
-                details.CancellationSource?.Cancel();
-            }
-            catch (ObjectDisposedException)
-            {
-                // Owner disposed it concurrently — the execution is already ending, safe to ignore.
-            }
-
+            RequestCancellation(details.CancellationSource);
             return true;
         }
 
@@ -321,21 +342,15 @@ namespace TickerQ.Utilities
         internal static bool RequestTickerCancellation(TickerExecutionLease lease)
             => RequestTickerCancellation(TickerQRuntimePartition.LegacyGlobal.StorageKey, lease);
 
-        internal static bool RequestTickerCancellation(string runtimePartitionKey, TickerExecutionLease lease)
+        internal static bool RequestTickerCancellation(string runtimePartitionKey, TickerExecutionLease lease,
+            TickerCancellationCause cause = TickerCancellationCause.Request)
         {
             var key = new TickerExecutionKey(runtimePartitionKey, lease.Type, lease.TickerId);
             if (!TickerCancellationTokens.TryGetValue(key, out var details)
                 || details.AcquisitionToken != lease.AcquisitionToken)
                 return false;
 
-            try
-            {
-                details.CancellationSource?.Cancel();
-            }
-            catch (ObjectDisposedException)
-            {
-            }
-
+            RequestCancellation(details.CancellationSource, cause);
             return true;
         }
 

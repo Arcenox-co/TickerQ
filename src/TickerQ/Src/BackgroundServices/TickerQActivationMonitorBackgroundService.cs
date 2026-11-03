@@ -8,6 +8,7 @@ using TickerQ.Utilities.Cluster;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Models;
+using TickerQ.Utilities.Infrastructure;
 
 namespace TickerQ.BackgroundServices;
 
@@ -32,7 +33,7 @@ internal sealed class TickerQActivationMonitorBackgroundService(
     ITickerQActivationGate activationGate,
     ITickerQHostScheduler hostScheduler,
     ITickerClock clock,
-    ILogger<TickerQActivationMonitorBackgroundService> logger) : BackgroundService
+    ILogger<TickerQActivationMonitorBackgroundService> logger) : TickerQBackgroundService(logger)
 {
     internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
     internal static readonly TimeSpan StalledActivationTimeout = TimeSpan.FromMinutes(2);

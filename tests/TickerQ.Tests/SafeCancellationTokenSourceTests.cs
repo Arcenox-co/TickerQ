@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -67,6 +69,64 @@ public class SafeCancellationTokenSourceTests
 
         Assert.True(linked.IsCancellationRequested);
         linked.Dispose();
+    }
+
+    [Fact]
+    public void LinkedWithFailureHandler_ParentCancel_DoesNotThrowACallbackFailure_AndReportsIt()
+    {
+        using var parent = new CancellationTokenSource();
+        var failures = new List<AggregateException>();
+        using var linked = SafeCancellationTokenSource.CreateLinked(failures.Add, parent.Token);
+        // What a database driver does for a query in flight: abort it, and fail while doing so.
+        linked.Token.Register(() => throw new IOException("I/O error occurred."));
+
+        parent.Cancel();
+
+        Assert.True(linked.IsCancellationRequested);
+        Assert.IsType<IOException>(Assert.Single(Assert.Single(failures).InnerExceptions));
+    }
+
+    [Fact]
+    public void LinkedWithFailureHandler_Cancel_ReportsACallbackFailure_InsteadOfThrowing()
+    {
+        var failures = new List<AggregateException>();
+        using var linked = SafeCancellationTokenSource.CreateLinked(failures.Add);
+        linked.Token.Register(() => throw new IOException("I/O error occurred."));
+
+        linked.Cancel();
+
+        Assert.True(linked.IsCancellationRequested);
+        Assert.Single(failures);
+    }
+
+    [Fact]
+    public void WithoutAFailureHandler_ACallbackFailure_StillThrows()
+    {
+        using var cts = new SafeCancellationTokenSource();
+        cts.Token.Register(() => throw new IOException("I/O error occurred."));
+
+        Assert.Throws<AggregateException>(() => cts.Cancel());
+    }
+
+    [Fact]
+    public void LinkedWithFailureHandler_Dispose_StopsFollowingTheParent()
+    {
+        using var parent = new CancellationTokenSource();
+        var linked = SafeCancellationTokenSource.CreateLinked(_ => { }, parent.Token);
+        var token = linked.Token;
+        linked.Dispose();
+
+        parent.Cancel();
+
+        Assert.False(token.IsCancellationRequested);
+    }
+
+    [Fact]
+    public void LinkedWithFailureHandler_ToACancelledParent_StartsCancelled()
+    {
+        using var linked = SafeCancellationTokenSource.CreateLinked(_ => { }, new CancellationToken(canceled: true));
+
+        Assert.True(linked.IsCancellationRequested);
     }
 
     [Fact]

@@ -11,10 +11,11 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
+using TickerQ.Utilities.Infrastructure;
 
 namespace TickerQ.Dashboard.Assistant;
 
-internal sealed class AssistantAutoInvestigationService<TTimeTicker, TCronTicker> : BackgroundService
+internal sealed class AssistantAutoInvestigationService<TTimeTicker, TCronTicker> : TickerQBackgroundService
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
 {
@@ -25,6 +26,7 @@ internal sealed class AssistantAutoInvestigationService<TTimeTicker, TCronTicker
     public AssistantAutoInvestigationService(IServiceScopeFactory scopes,
         AssistantOptionsBuilder assistant,
         ILogger<AssistantAutoInvestigationService<TTimeTicker, TCronTicker>> logger)
+        : base(logger)
     {
         _scopes = scopes;
         _options = assistant.RunInvestigator.Automatic;

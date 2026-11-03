@@ -36,6 +36,24 @@ public sealed class MongoResultPersistenceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CommitAndExactReplayEachRunOneGraphTransaction()
+    {
+        var (ticker, token) = await AddAcquiredTimeTickerAsync();
+        var committed = Success(ticker.Id, token, null, Envelope(3));
+        var fence = _fixture.Database.GetCollection<BsonDocument>("ticker_TimeTickers_GraphFence");
+        async Task<long> FenceVersionAsync() => (await fence.Find(FilterDefinition<BsonDocument>.Empty)
+            .ToListAsync()).Sum(x => x["Version"].ToInt64());
+
+        var before = await FenceVersionAsync();
+        Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(committed));
+        Assert.Equal(before + 1, await FenceVersionAsync());
+        Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(committed));
+        Assert.Equal(before + 2, await FenceVersionAsync());
+
+        Assert.Equal(3, (await _fixture.Provider.GetTimeTickerResultAsync(ticker.Id))!.ToPayloadArray()[0]);
+    }
+
+    [Fact]
     public async Task ExplicitNullEnvelopeClearsStaleResultInSuccessfulCommit()
     {
         var (ticker, token) = await AddAcquiredTimeTickerAsync();

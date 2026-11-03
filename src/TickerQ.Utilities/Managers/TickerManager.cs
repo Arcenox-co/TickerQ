@@ -188,6 +188,7 @@ namespace TickerQ.Utilities.Managers
 
             if (affected > 0)
             {
+                _logger.LogInformation("Pending time ticker {TickerId} was cancelled on request ({Affected} row(s))", id, affected);
                 // Persistence already fenced execution. Refresh hints must not turn a committed
                 // cancellation into a reported failure or cancel an unrelated running function.
                 try { _tickerQHostScheduler.Restart(); } catch { }
@@ -577,6 +578,11 @@ namespace TickerQ.Utilities.Managers
             if (newRoot is null)
                 return new TickerResult<TTimeTicker>(
                     new TickerValidatorException("Replacement chain root must not be null!"));
+
+            if (!_persistenceProvider.SupportsTimeTickerChainReplacement)
+                return new TickerResult<TTimeTicker>(new NotSupportedException(
+                    "This store cannot replace a chain atomically, so a saved chain cannot be edited. " +
+                    "Delete it and add the new chain instead."));
 
             if (newRoot.Id == Guid.Empty)
                 newRoot.Id = Guid.NewGuid();
@@ -1098,7 +1104,7 @@ namespace TickerQ.Utilities.Managers
 
                 return await CompleteMutationAsync(new TickerResult<List<TTimeTicker>>(entities, affected), async () =>
                 {
-                    await CaptureCreatedBatchAsync(entities).ConfigureAwait(false);
+                    await CaptureCreatedBatchAsync(entities, affected).ConfigureAwait(false);
                     await NotifyAsync(() => _notificationHubSender.AddTimeTickersBatchNotifyAsync()).ConfigureAwait(false);
 
                     // Only try to dispatch immediately if dispatcher is enabled (background services running)
@@ -1417,13 +1423,23 @@ namespace TickerQ.Utilities.Managers
             }).ConfigureAwait(false);
         }
 
-        private async Task CaptureCreatedBatchAsync(List<TTimeTicker> entities)
+        private async Task CaptureCreatedBatchAsync(List<TTimeTicker> entities, int affected)
         {
             if (_lifecycle?.Enabled != true) return;
             // Batch providers may accept only some roots. Read committed rows, never report
             // a rejected input as created. Diagnostics must not interrupt post-commit dispatch.
             try
             {
+                // Providers count either inserted nodes or inserted roots, so a count equal to every
+                // supplied node proves the whole batch was committed. The read-back is a membership
+                // predicate over every id, which a provider evaluating it per row runs in O(n²).
+                if (affected == CountTimeTickerNodes(entities))
+                {
+                    foreach (var root in entities)
+                        _lifecycle.CreatedTree(root, _executionContext.RuntimePartition.StorageKey);
+                    return;
+                }
+
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
                 var ids = entities.Select(x => x.Id).ToArray();
                 var saved = await _persistenceProvider.GetTimeTickers(
@@ -1432,6 +1448,20 @@ namespace TickerQ.Utilities.Managers
                 foreach (var row in saved) _lifecycle.CreatedTree(row, _executionContext.RuntimePartition.StorageKey);
             }
             catch { }
+        }
+
+        private static int CountTimeTickerNodes(IEnumerable<TTimeTicker> roots)
+        {
+            var count = 0;
+            var pending = new Stack<TTimeTicker>(roots);
+            while (pending.TryPop(out var node))
+            {
+                count++;
+                foreach (var child in node.GetChildrenForRead() ?? [])
+                    if (child != null) pending.Push(child);
+            }
+
+            return count;
         }
 
         private async Task<TickerResult<TEntity>> CompleteMutationAsync<TEntity>(

@@ -18,6 +18,9 @@ namespace TickerQ.Exceptions
     {
         public string Type { get; set; }
         public string Message { get; set; }
+        /// <summary>Why TickerQ ended the execution, when it knows; written only for cancellations.</summary>
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public string Reason { get; set; }
         public string Method { get; set; }
         public string SourceFile { get; set; }
         public int? SourceLine { get; set; }

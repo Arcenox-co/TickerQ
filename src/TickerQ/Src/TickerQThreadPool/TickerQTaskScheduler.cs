@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Tasks.Sources;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 
@@ -24,7 +25,64 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
     private readonly TimeSpan _disposeDrainTimeout;
     private readonly object _stateLock = new();
     private readonly Queue<WorkItem>[] _queues = [new(), new(), new()];
-    private readonly SemaphoreSlim _availableItems = new(0);
+    // Counting wake-up for idle workers, guarded by _stateLock: one reusable waiter per worker
+    // instead of SemaphoreSlim's per-wait task, promise and stop-token registration.
+    private int _availableItems;
+    private readonly Stack<WorkerWaiter> _idleWorkers = new();
+
+    private sealed class WorkerWaiter : IValueTaskSource
+    {
+        private ManualResetValueTaskSourceCore<bool> _core = new() { RunContinuationsAsynchronously = true };
+        internal ValueTask WaitAsync() => new(this, _core.Version);
+        internal void Signal() => _core.SetResult(true);
+        internal void Fail(Exception exception) => _core.SetException(exception);
+
+        void IValueTaskSource.GetResult(short token)
+        {
+            try { _core.GetResult(token); }
+            finally { _core.Reset(); }
+        }
+
+        ValueTaskSourceStatus IValueTaskSource.GetStatus(short token) => _core.GetStatus(token);
+
+        void IValueTaskSource.OnCompleted(Action<object> continuation, object state, short token,
+            ValueTaskSourceOnCompletedFlags flags) => _core.OnCompleted(continuation, state, token, flags);
+    }
+
+    /// <summary>Takes one queued item's wake-up, or parks <paramref name="waiter"/> until one arrives.</summary>
+    private ValueTask WaitForWorkAsync(WorkerWaiter waiter)
+    {
+        lock (_stateLock)
+        {
+            // As SemaphoreSlim.WaitAsync(token): a stopped scheduler refuses even an available item.
+            _stopToken.ThrowIfCancellationRequested();
+            if (_availableItems > 0)
+            {
+                _availableItems--;
+                return default;
+            }
+            _idleWorkers.Push(waiter);
+        }
+        return waiter.WaitAsync();
+    }
+
+    // All callers hold _stateLock.
+    private void SignalWorkAvailable()
+    {
+        if (_idleWorkers.TryPop(out var waiter))
+            waiter.Signal();
+        else
+            _availableItems++;
+    }
+
+    private void FailIdleWorkers()
+    {
+        lock (_stateLock)
+        {
+            while (_idleWorkers.TryPop(out var waiter))
+                waiter.Fail(new OperationCanceledException(_stopToken));
+        }
+    }
     private readonly CancellationTokenSource _shutdownCts = new();
     private readonly CancellationToken _stopToken;
     private readonly SoftSchedulerNotifyDebounce _notifyDebounce;
@@ -58,9 +116,9 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
     {
         private int _acceptingNested = 1;
         private int _nestedCount;
-        private readonly SemaphoreSlim _nestedSerial = new(1, 1);
-        private readonly TaskCompletionSource<bool> _nestedDrained =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Most orchestrations never run nested work: both are created on first use.
+        private SemaphoreSlim _nestedSerial;
+        private TaskCompletionSource<bool> _nestedDrained;
 
         internal ExecutionScope(TickerQTaskScheduler owner) => Owner = owner;
         internal TickerQTaskScheduler Owner { get; }
@@ -82,13 +140,24 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
         {
             if (Interlocked.Decrement(ref _nestedCount) == 0 &&
                 Volatile.Read(ref _acceptingNested) == 0)
-                _nestedDrained.TrySetResult(true);
+                Volatile.Read(ref _nestedDrained)?.TrySetResult(true);
         }
 
         internal Task WaitForNestedTurnAsync(CancellationToken cancellationToken)
-            => _nestedSerial.WaitAsync(cancellationToken);
+            => NestedSerial.WaitAsync(cancellationToken);
 
-        internal void ReleaseNestedTurn() => _nestedSerial.Release();
+        internal void ReleaseNestedTurn() => NestedSerial.Release();
+
+        private SemaphoreSlim NestedSerial
+        {
+            get
+            {
+                var serial = Volatile.Read(ref _nestedSerial);
+                if (serial != null) return serial;
+                serial = new SemaphoreSlim(1, 1);
+                return Interlocked.CompareExchange(ref _nestedSerial, serial, null) ?? serial;
+            }
+        }
 
         internal static void Observe(Task task)
         {
@@ -103,8 +172,14 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
         {
             Volatile.Write(ref _acceptingNested, 0);
             if (Volatile.Read(ref _nestedCount) == 0)
-                _nestedDrained.TrySetResult(true);
-            return _nestedDrained.Task;
+                return Task.CompletedTask;
+
+            var drained = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            drained = Interlocked.CompareExchange(ref _nestedDrained, drained, null) ?? drained;
+            // The last nested release may have run before the signal existed.
+            if (Volatile.Read(ref _nestedCount) == 0)
+                drained.TrySetResult(true);
+            return drained.Task;
         }
     }
 
@@ -161,6 +236,7 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
         _disposeDrainTimeout = disposeDrainTimeout;
         _notifyDebounce = notifyDebounce ?? new SoftSchedulerNotifyDebounce(_ => { });
         _stopToken = _shutdownCts.Token;
+        _stopToken.UnsafeRegister(static state => ((TickerQTaskScheduler)state).FailIdleWorkers(), this);
         _drained.TrySetResult(true);
         _activeWorkers = maxConcurrency;
         var workers = new Task[maxConcurrency];
@@ -249,7 +325,7 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
                     // Count before signaling, so a consumer cannot observe an unowned item.
                     _totalQueuedTasks++;
                     _queues[GetPriorityQueue(priority)].Enqueue(new WorkItem(work, cancellationToken, priority, completion, executionContext));
-                    _availableItems.Release();
+                    SignalWorkAvailable();
                     return;
                 }
                 capacity = (_capacityChanged ??= NewSignal()).Task;
@@ -391,9 +467,10 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
     {
         try
         {
+            var waiter = new WorkerWaiter();
             while (true)
             {
-                await _availableItems.WaitAsync(_stopToken).ConfigureAwait(false);
+                await WaitForWorkAsync(waiter).ConfigureAwait(false);
                 WorkItem item;
                 lock (_stateLock)
                 {
@@ -410,14 +487,9 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
                     if (item.Completion != null && !item.Completion.TryBegin()) continue;
                     if (!item.UserToken.IsCancellationRequested && !_stopToken.IsCancellationRequested)
                     {
-                        if (item.ExecutionContext == null)
-                            await ExecuteWorkAsync(item).ConfigureAwait(false);
-                        else
-                        {
-                            Task execution = null;
-                            ExecutionContext.Run(item.ExecutionContext, _ => execution = ExecuteWorkAsync(item), null);
-                            await execution.ConfigureAwait(false);
-                        }
+                        // ExecuteWorkAsync enters the item's ExecutionContext itself; as an async
+                        // method it hands the worker's own context back when it first yields.
+                        await ExecuteWorkAsync(item).ConfigureAwait(false);
                     }
                     else
                         item.Completion?.CompleteCancellation(item.UserToken.IsCancellationRequested ? item.UserToken : _stopToken);
@@ -459,6 +531,8 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
 
     private async Task ExecuteWorkAsync(WorkItem workItem)
     {
+        if (workItem.ExecutionContext != null)
+            ExecutionContext.Restore(workItem.ExecutionContext);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(workItem.UserToken, _stopToken);
         var previousScope = _currentExecutionScope.Value;
         var executionScope = new ExecutionScope(this);
@@ -653,16 +727,11 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
             _activeOrchestrations++;
         }
         // Never inherit an executing parent's inline QueueAsync scope. The new root has
-        // its own accepted lifetime, even when admitted by a job at concurrency one.
-        Task task;
-        if (ExecutionContext.IsFlowSuppressed())
-            task = Task.Run(() => RunOrchestrationAsync(work));
-        else
-        {
-            using (ExecutionContext.SuppressFlow())
-                task = Task.Run(() => RunOrchestrationAsync(work));
-        }
-        ExecutionScope.Observe(task);
+        // its own accepted lifetime, even when admitted by a job at concurrency one: an
+        // unsafe work item flows no ExecutionContext. RunOrchestrationAsync observes its own faults.
+        ThreadPool.UnsafeQueueUserWorkItem(
+            static state => _ = state.Scheduler.RunOrchestrationAsync(state.Work),
+            (Scheduler: this, Work: work), preferLocal: false);
         return true;
     }
 
@@ -680,6 +749,7 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
             if (task != null) await task.ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (_stopToken.IsCancellationRequested) { }
+        catch (Exception) { } // An orchestration's fault is its own outcome; it never escapes the pool.
         finally
         {
             await scope.CloseAndWaitAsync().ConfigureAwait(false);
@@ -712,8 +782,8 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
         try
         {
             var completion = new WorkItemCompletion();
-            using var userRegistration = token.Register(() => completion.CancelBeforeStart(token));
-            using var stopRegistration = _stopToken.Register(() => completion.CancelBeforeStart(_stopToken));
+            using var userRegistration = completion.CancelBeforeStartOn(token);
+            using var stopRegistration = completion.CancelBeforeStartOn(_stopToken);
             await QueueCoreAsync(work, priority, token, generation, owner != null, completion, ExecutionContext.Capture()).ConfigureAwait(false);
             await completion.Task.ConfigureAwait(false);
         }
@@ -772,7 +842,6 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
     {
         if (Interlocked.Exchange(ref _sharedReleased, 1) != 0) return;
         _notifyDebounce.Dispose();
-        _availableItems.Dispose();
         _shutdownCts.Dispose();
         _allStopped.TrySetResult(true);
     }

@@ -1,4 +1,5 @@
 -- Atomically publishes a TimeTicker document and its scheduler-critical indexes behind runtime admission.
+-- Loaded after RuntimeAdmission.lua.
 -- KEYS[1] document key, KEYS[2] all-id set, KEYS[3] pending sorted set,
 -- KEYS[4] reconciliation activation metadata, KEYS[5] terminal evidence hash,
 -- KEYS[6..n] result keys to clear on replacement
@@ -12,7 +13,7 @@ if #KEYS < 5 or #ARGV < 7 or ARGV[1] == '' or
    (ARGV[4] == 'upsert' and #ARGV ~= #KEYS + 1) then
     return redis.error_reply('invalid time ticker publication arguments')
 end
-if ARGV[6] ~= 'scoped' and ARGV[6] ~= 'startup-seeder' and ARGV[6] ~= 'legacy' then
+if not isAdmissionMode(ARGV[6]) then
     return redis.error_reply('invalid runtime admission mode')
 end
 local expectedTypes = {'string','set','zset','hash','hash'}
@@ -37,26 +38,9 @@ end
 for i = 7, #ARGV do
     if ARGV[i] == '' then return redis.error_reply('invalid terminal evidence field') end
 end
-local activationType = redis.call('TYPE', KEYS[4])['ok']
-if activationType ~= 'none' and activationType ~= 'hash' then
-    return redis.error_reply('reconciliation activation metadata key has an incompatible Redis type')
-end
-if ARGV[6] == 'legacy' and redis.call('HGET', KEYS[4], 'legacyAdoptionState') then return 0 end
-if (ARGV[6] == 'scoped' or ARGV[6] == 'startup-seeder') and activationType == 'none' then return 0
-elseif ARGV[6] == 'scoped' or ARGV[6] == 'startup-seeder' then
-    local activation = redis.call('HGETALL', KEYS[4])
-    if #activation ~= 6 then return redis.error_reply('reconciliation activation metadata is corrupt') end
-    local fields = {}
-    for i = 1, #activation, 2 do fields[activation[i]] = activation[i + 1] end
-    if not fields['epoch'] or not fields['phase'] or fields['checkpoint'] == nil or
-       not string.match(fields['epoch'], '^[0-9]+$') or #fields['epoch'] > 19 or
-       #fields['checkpoint'] > 200 or
-       (fields['phase'] ~= '0' and fields['phase'] ~= '1' and fields['phase'] ~= '2') then
-        return redis.error_reply('reconciliation activation metadata is corrupt')
-    end
-    local allowedPhase = fields['phase'] == '2' or (ARGV[6] == 'startup-seeder' and fields['phase'] == '1')
-    if not allowedPhase or fields['epoch'] ~= ARGV[5] then return 0 end
-end
+local admitted = runtimeAdmits(KEYS[4], ARGV[5], ARGV[6])
+if type(admitted) == 'table' then return admitted end
+if not admitted then return 0 end
 if ARGV[4] == 'once' and redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
 for i = 7, #ARGV do redis.call('HDEL', KEYS[5], ARGV[i]) end
 for i = 6, #KEYS do redis.call('DEL', KEYS[i]) end

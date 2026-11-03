@@ -38,6 +38,9 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
     // Cached lowercase TickerType names to avoid per-call ToString + ToLowerInvariant allocations
     private static readonly Dictionary<TickerType, string> TickerTypeNamesLower =
         Enum.GetValues<TickerType>().ToDictionary(t => t, t => t.ToString().ToLowerInvariant());
+    // Formatted once, not per execution.
+    private static readonly Dictionary<TickerType, string> JobActivityNames =
+        TickerTypeNamesLower.ToDictionary(x => x.Key, x => "tickerq.job.execute." + x.Value);
 
     // Track admitted executions, not queued cancellation registrations. Otherwise two
     // occurrences acquired together can both see a sibling and both skip.
@@ -50,10 +53,13 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
     private readonly ITickerClock _clock;
     private readonly ITickerQInstrumentation _tickerQInstrumentation;
     private readonly IInternalTickerManager _internalTickerManager;
+    private readonly ExecutionStoreGate _store;
     private readonly SchedulerOptionsBuilder _schedulerOptions;
     private readonly ITickerQFailureNotifier _failureNotifier;
     private readonly TickerQLicenseStateProvider _licenseState;
     private readonly ITickerFunctionConcurrencyGate _concurrencyGate;
+    private readonly SchedulerProgressReporter _schedulerProgress;
+    private IServiceScopeFactory _scopeFactory;
     private readonly ITickerQExecutionScheduler _executionScheduler;
     private readonly Func<string, TickerFunctionDescriptor> _descriptorResolver;
 
@@ -85,9 +91,11 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         _tickerQInstrumentation = tickerQInstrumentation;
         _internalTickerManager = internalTickerManager;
         _schedulerOptions = schedulerOptions;
+        _store = new ExecutionStoreGate(internalTickerManager, schedulerOptions?.MaxConcurrency ?? Environment.ProcessorCount);
         _failureNotifier = failureNotifier;
         _licenseState = licenseState ?? throw new ArgumentNullException(nameof(licenseState));
         _concurrencyGate = concurrencyGate ?? throw new ArgumentNullException(nameof(concurrencyGate));
+        _schedulerProgress = new SchedulerProgressReporter(this);
         _executionScheduler = serviceProvider.GetService<ITickerQTaskScheduler>() as ITickerQExecutionScheduler;
         _descriptorResolver = descriptorResolver ?? throw new ArgumentNullException(nameof(descriptorResolver));
     }
@@ -195,23 +203,28 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             mode: ExecutionMode.TestChain).ConfigureAwait(false);
     }
 
-    public async Task ExecuteRegisteredTaskAsync(InternalFunctionContext context, bool isDue,
+    // Not async: each branch hands back the task that does the work, so a job pays for no
+    // extra state machine here. Synchronous failures still surface as a faulted task.
+    public Task ExecuteRegisteredTaskAsync(InternalFunctionContext context, bool isDue,
         CancellationTokenSource registeredSource, CancellationToken cancellationToken = default)
     {
+        // Finalizing an acquired cancellation is cleanup, not a new execution. Do it
+        // before license checks, contract validation, cron-chain creation, or user hooks.
         if (registeredSource?.IsCancellationRequested == true || cancellationToken.IsCancellationRequested)
+            return IsAbandonedByStop(context, registeredSource, ExecutionMode.Scheduler)
+                ? AbandonOnStopAsync(context, functionStarted: false)
+                : CancelBeforeExecutionAsync(context, CancellationCause(registeredSource));
+        try
         {
-            // Finalizing an acquired cancellation is cleanup, not a new execution. Do it
-            // before license checks, contract validation, cron-chain creation, or user hooks.
-            await CancelBeforeExecutionAsync(context).ConfigureAwait(false);
-            return;
+            EnsureLicensedForExecution();
+            return ShouldSkipMissedExecution(context, _clock.UtcNow, out var missedReason)
+                ? SkipMissedBeforeExecutionAsync(context, missedReason)
+                : ExecuteTreeAsync(context, isDue, registeredSource, cancellationToken, isChild: false);
         }
-        EnsureLicensedForExecution();
-        if (ShouldSkipMissedExecution(context, _clock.UtcNow, out var missedReason))
+        catch (Exception exception)
         {
-            await SkipMissedBeforeExecutionAsync(context, missedReason).ConfigureAwait(false);
-            return;
+            return Task.FromException(exception);
         }
-        await ExecuteTreeAsync(context, isDue, registeredSource, cancellationToken, isChild: false);
     }
 
     internal static bool ShouldSkipMissedExecution(
@@ -264,14 +277,57 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 .SetElapsedTime(0L)
                 .SetExceptionDetails(reason)
                 .SetResultEnvelope(null);
-            await _internalTickerManager.UpdateTickerAsync(current, CancellationToken.None).ConfigureAwait(false);
+            await _store.UpdateTickerAsync(current).ConfigureAwait(false);
             _tickerQInstrumentation.LogJobSkipped(current.TickerId, current.FunctionName, reason);
         }
     }
 
-    private async Task CancelBeforeExecutionAsync(InternalFunctionContext context)
+    // A stopping node cancels the tokens of the work it admitted; that is not a request to cancel
+    // the job. Persisting it as Cancelled would drop every job the drain window did not finish, so
+    // the work is handed back the way a crash would leave it. A frozen scheduler admits no new
+    // scheduler-mode work, so a cancellation seen while it is frozen belongs to work admitted before
+    // the stop — unless someone explicitly requested it, which stays a Cancelled even mid-drain.
+    // Chains keep their coordinator's outcome handling.
+    private bool IsAbandonedByStop(InternalFunctionContext context, CancellationTokenSource source, ExecutionMode mode)
+        => mode == ExecutionMode.Scheduler && !context.IsTestRun && context.ParentId == null &&
+           !TickerCancellationTokenManager.WasCancellationRequested(source) &&
+           !context.IsChainRetryRoot &&
+           (context.Type == TickerType.CronTickerOccurrence || context.TimeTickerChildren.Count == 0) &&
+           _executionScheduler is { IsFrozen: true };
+
+    // A job whose function never started is released for any node to acquire. One whose function
+    // started is left in progress: its lease is no longer renewed, and stale recovery applies the
+    // job's OnStale policy, exactly as after a crash.
+    private async Task AbandonOnStopAsync(InternalFunctionContext context, bool functionStarted)
     {
-        const string reason = "Cancelled before execution.";
+        if (!functionStarted)
+            await _store.ReleaseAcquiredResources([context]).ConfigureAwait(false);
+        _logger.LogInformation(
+            functionStarted
+                ? "TickerQ stopped while {TickerType} {TickerId} was running; stale recovery will resume it"
+                : "TickerQ stopped before {TickerType} {TickerId} started; it was released for another run",
+            context.Type, context.TickerId);
+    }
+
+    // An explicit request names its own cause. Otherwise a frozen scheduler means the node is
+    // stopping; anything else is a cancellation TickerQ cannot attribute.
+    private TickerCancellationCause? CancellationCause(CancellationTokenSource source)
+        => TickerCancellationTokenManager.GetRequestedCause(source) ??
+           (_executionScheduler is { IsFrozen: true } ? TickerCancellationCause.Shutdown : null);
+
+    // The cause rides on a scope, which the logger factory shares with the instrumentation's
+    // logger, so structured sinks can filter on it without changing the instrumentation API.
+    private void LogJobCancelled(InternalFunctionContext context, string reason, TickerCancellationCause? cause)
+    {
+        using var scope = cause is { } known
+            ? _logger.BeginScope(new[] { new KeyValuePair<string, object>("CancellationCause", known.ToString()) })
+            : null;
+        _tickerQInstrumentation.LogJobCancelled(context.TickerId, context.FunctionName, reason);
+    }
+
+    private async Task CancelBeforeExecutionAsync(InternalFunctionContext context, TickerCancellationCause? cause)
+    {
+        var reason = TickerCancellationReasons.BeforeExecutionBecause(cause);
         context.ChainRootId ??= context.TickerId;
         context.ChainGeneration ??= context.AcquisitionToken;
         var pending = new Stack<(InternalFunctionContext Context, bool Finalize)>();
@@ -306,8 +362,8 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 .SetResultEnvelope(null);
             // Preserve the acquired generation until its descendants have been finalized.
             // The provider fences every write; the cancellation token must not cancel cleanup.
-            await _internalTickerManager.UpdateTickerAsync(current, CancellationToken.None).ConfigureAwait(false);
-            try { _tickerQInstrumentation.LogJobCancelled(current.TickerId, current.FunctionName, reason); }
+            await _store.UpdateTickerAsync(current).ConfigureAwait(false);
+            try { LogJobCancelled(current, reason, cause); }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "TickerQ cancellation logging failed for {TickerType} {TickerId}",
@@ -316,13 +372,29 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         }
     }
 
-    private async Task RunContextFunctionAsync(
+    private Task RunContextFunctionAsync(
         InternalFunctionContext context,
         bool isDue,
         CancellationToken cancellationToken,
         bool isChild = false,
         CancellationTokenSource preRegisteredSource = null,
         ExecutionMode mode = ExecutionMode.Scheduler)
+    {
+        // Root registered at acquisition time by the scheduler: reuse its source and leave
+        // removal/disposal to the owner (the scheduler delegate's finally) — running it here too
+        // would double-remove and risk disposing the source out from under the owner.
+        return preRegisteredSource != null && !context.IsTestRun
+            ? RunCronGuardedFunctionAsync(context, isDue, cancellationToken, preRegisteredSource, isChild, mode)
+            : RunContextFunctionWithOwnSourceAsync(context, isDue, cancellationToken, isChild, preRegisteredSource, mode);
+    }
+
+    private async Task RunContextFunctionWithOwnSourceAsync(
+        InternalFunctionContext context,
+        bool isDue,
+        CancellationToken cancellationToken,
+        bool isChild,
+        CancellationTokenSource preRegisteredSource,
+        ExecutionMode mode)
     {
         if (context.IsTestRun)
         {
@@ -351,7 +423,7 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         if (cancellationTokenSource == null)
         {
             if (generationConflict && mode == ExecutionMode.Scheduler)
-                await _internalTickerManager.ReleaseAcquiredResources([context], CancellationToken.None)
+                await _store.ReleaseAcquiredResources([context])
                     .ConfigureAwait(false);
             return; // duplicate generation stays with its existing owner; conflicts retry from persistence
         }
@@ -370,25 +442,28 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         }
     }
 
-    private async Task RunCronGuardedFunctionAsync(
+    private Task RunCronGuardedFunctionAsync(
         InternalFunctionContext context, bool isDue, CancellationToken cancellationToken,
         CancellationTokenSource cancellationTokenSource, bool isChild, ExecutionMode mode)
     {
         if (mode != ExecutionMode.Scheduler || context.Type != TickerType.CronTickerOccurrence)
-        {
-            await RunContextFunctionCoreAsync(context, isDue, cancellationToken,
-                cancellationTokenSource, isChild, mode).ConfigureAwait(false);
-            return;
-        }
+            return RunContextFunctionCoreAsync(context, isDue, cancellationToken,
+                cancellationTokenSource, isChild, mode);
         if (!context.ParentId.HasValue)
         {
             if (context.SkipIfAlreadyRunning)
-                throw new InvalidOperationException("A cron overlap policy requires the owning cron ID.");
-            await RunContextFunctionCoreAsync(context, isDue, cancellationToken,
-                cancellationTokenSource, isChild, mode).ConfigureAwait(false);
-            return;
+                return Task.FromException(new InvalidOperationException("A cron overlap policy requires the owning cron ID."));
+            return RunContextFunctionCoreAsync(context, isDue, cancellationToken,
+                cancellationTokenSource, isChild, mode);
         }
 
+        return RunOverlapGuardedCronAsync(context, isDue, cancellationToken, cancellationTokenSource, isChild, mode);
+    }
+
+    private async Task RunOverlapGuardedCronAsync(
+        InternalFunctionContext context, bool isDue, CancellationToken cancellationToken,
+        CancellationTokenSource cancellationTokenSource, bool isChild, ExecutionMode mode)
+    {
         var key = (context.RuntimePartitionKey ?? TickerQRuntimePartition.LegacyGlobal.StorageKey, context.ParentId.Value);
         bool skip;
         lock (_cronAdmissionLock)
@@ -406,7 +481,7 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 .SetElapsedTime(0L)
                 .SetExceptionDetails(reason);
             _tickerQInstrumentation.LogJobSkipped(context.TickerId, context.FunctionName, reason);
-            await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None).ConfigureAwait(false);
+            await _store.UpdateTickerAsync(context).ConfigureAwait(false);
             return;
         }
         try
@@ -438,7 +513,9 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             ? cachedTypeName
             : context.Type.ToString().ToLowerInvariant();
 
-        using var jobActivity = _tickerQInstrumentation.StartJobActivity($"tickerq.job.execute.{typeName}", context);
+        using var jobActivity = _tickerQInstrumentation.StartJobActivity(
+            JobActivityNames.TryGetValue(context.Type, out var activityName) ? activityName : $"tickerq.job.execute.{typeName}",
+            context);
 
         jobActivity?.SetTag("tickerq.job.is_due", isDue);
         jobActivity?.SetTag("tickerq.job.is_child", isChild);
@@ -459,16 +536,16 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 context.TickerId, context.FunctionName, exception, context.RetryCount);
             TryNotifyFailure(context, "contract_drift", driftReason);
             if (mode == ExecutionMode.Scheduler)
-                await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None).ConfigureAwait(false);
+                await _store.UpdateTickerAsync(context).ConfigureAwait(false);
             return;
         }
 
-        var stopWatch = new Stopwatch();
+        var stopWatch = default(ExecutionTimer);
         // Total wall-clock from first attempt start through the final outcome,
         // including retry wait intervals. Persisted as ElapsedTime so the
         // dashboard's Duration column reflects the user's lived time, not just
         // the last attempt's CPU time.
-        var totalStopWatch = Stopwatch.StartNew();
+        var totalStopWatch = ExecutionTimer.StartNew();
 
         // Fetch the direct parent's committed result (if any) before invoking the function so the
         // body can read it. Roots (no ParentId) and parents that published none yield null. A cron
@@ -476,9 +553,7 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         var parentResult = mode == ExecutionMode.TestChain
             ? context.ParentResultEnvelope
             : context.ParentResultEnvelope ?? (context.ParentId.HasValue
-                ? await _internalTickerManager
-                    .GetParentResultAsync(context.ParentId.Value, context.Type, CancellationToken.None)
-                    .ConfigureAwait(false)
+                ? await _store.GetParentResultAsync(context.ParentId.Value, context.Type).ConfigureAwait(false)
                 : null);
 
         var tickerFunctionContext = new TickerFunctionContext
@@ -502,25 +577,13 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             // can pass it along — without these the SDK would see Retries=0.
             Retries = context.Retries,
             RetryIntervals = context.RetryIntervals,
-            RequestCancelOperationAction = () => cancellationTokenSource.Cancel(),
+            // No per-job closures: cancellation goes straight to the job's source, and scheduler
+            // progress goes through one reusable reporter with this job's context as its state.
+            CancellationSource = cancellationTokenSource,
+            ProgressTarget = mode == ExecutionMode.Scheduler ? _schedulerProgress : null,
+            ProgressState = mode == ExecutionMode.Scheduler ? context : null,
             ProgressReporter = mode == ExecutionMode.Scheduler
-                ? async (percent, message, token) =>
-                {
-                    var update = new TickerProgressUpdate
-                    {
-                        TickerId = context.TickerId,
-                        Type = context.Type,
-                        ParentId = context.ParentId,
-                        ChainRootId = context.ChainRootId,
-                        ChainGeneration = context.ChainGeneration,
-                        AcquisitionToken = context.AcquisitionToken,
-                        Percent = percent,
-                        Message = message,
-                        UpdatedAtUtc = _clock.UtcNow,
-                    };
-                    if (await _internalTickerManager.ReportProgressAsync(update, token).ConfigureAwait(false))
-                        _lifecycle?.Progress(context, update);
-                }
+                ? null
                 : mode == ExecutionMode.TestChain || context.IsTestRun
                     ? (percent, message, _) =>
                     {
@@ -545,6 +608,7 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
         Exception lastException = null;
         var success = false;
+        var functionStarted = false;
 
         var effectiveTimeout = GetEffectiveTimeout(context);
         // Qualified remote functions execute their retry policy inside the SDK. Core still
@@ -621,15 +685,24 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                             "Register an ITickerFunction with MapTicker<T>() or decorate a method with [TickerFunction].");
                     }
 
-                    // Create service scope - will be disposed automatically via await using
-                    await using var scope = _serviceProvider.CreateAsyncScope();
-                    tickerFunctionContext.SetServiceScope(scope);
+                    // The attempt's service scope, created on first resolution and disposed via await using.
+                    await using var scope = new LazyServiceScope(
+                        _scopeFactory ??= _serviceProvider.GetRequiredService<IServiceScopeFactory>());
+                    tickerFunctionContext.SetServiceScope(new AsyncServiceScope(scope));
 
-                    // Per-attempt cancellation: linked to the job's CTS (user cancel /
-                    // shutdown) and additionally fired by the execution timeout.
-                    attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationTokenSource.Token, executionToken);
+                    // Per-attempt cancellation: the job's CTS (user cancel / shutdown) and the
+                    // execution timeout. executionToken already carries the job's token — it is that
+                    // token on the direct path, and ExecuteAsync links work to the token it is given —
+                    // so an attempt only needs its own source when a timeout has to fire it.
+                    CancellationToken attemptToken;
                     if (effectiveTimeout is { } timeout)
+                    {
+                        attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationTokenSource.Token, executionToken);
                         attemptCts.CancelAfter(timeout);
+                        attemptToken = attemptCts.Token;
+                    }
+                    else
+                        attemptToken = executionToken;
 
                     // Ambient log scope: ILogger calls flowing on the function body's async
                     // stack land in the in-memory log store the dashboard's log tail reads.
@@ -640,7 +713,8 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                         // delegate may begin once the shared offline authority becomes blocking.
                         EnsureLicensedForExecution();
                         _lifecycle?.Started(context, attempt);
-                        var execTask = context.CachedDelegate(attemptCts.Token, scope.ServiceProvider, tickerFunctionContext);
+                        functionStarted = true;
+                        var execTask = context.CachedDelegate(attemptToken, scope.ServiceProvider, tickerFunctionContext);
                         var timeoutPending = false;
 
                         if (effectiveTimeout is { } t)
@@ -724,16 +798,28 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             catch (OperationCanceledException ex) when (
                 cancellationTokenSource.IsCancellationRequested || executionAttemptToken.IsCancellationRequested || ex is TaskCanceledException)
             {
+                if (cancellationTokenSource.IsCancellationRequested &&
+                    IsAbandonedByStop(context, cancellationTokenSource, mode))
+                {
+                    // An earlier attempt counts as started: its retry count is already persisted.
+                    await AbandonOnStopAsync(context, functionStarted).ConfigureAwait(false);
+                    return;
+                }
+
+                // A cancellation exception with neither token cancelled came from the function's own code.
+                var cause = cancellationTokenSource.IsCancellationRequested || executionAttemptToken.IsCancellationRequested
+                    ? CancellationCause(cancellationTokenSource)
+                    : TickerCancellationCause.FunctionException;
+                var reason = TickerCancellationReasons.WhileRunningBecause(cause);
                 context.SetStatus(TickerStatus.Cancelled)
                     .SetExecutedAt(_clock.UtcNow)
                     .SetElapsedTime(stopWatch.ElapsedMilliseconds)
-                    .SetExceptionDetails(SerializeException(ex));
-                
+                    .SetExceptionDetails(SerializeException(ex, cause is null ? null : reason));
+
                 // Record only the non-sensitive terminal status on the activity.
                 jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
-                
-                // Log job cancelled
-                _tickerQInstrumentation.LogJobCancelled(context.TickerId, context.FunctionName, "Task was cancelled");
+
+                LogJobCancelled(context, reason, cause);
 
                 if (mode == ExecutionMode.Scheduler)
                     await PersistExecutionUpdateAsync(context, tickerFunctionContext);
@@ -848,7 +934,7 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 // completed inside the worker and their immutable terminal outcome is committed once
                 // by the scheduler below; worker mode never mutates durable scheduler state.
                 if (mode == ExecutionMode.Scheduler && !usesRemoteRetryPolicy)
-                    await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
+                    await _store.UpdateTickerAsync(context);
 
                 context.ResetUpdateProps();
             }
@@ -919,7 +1005,7 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
     /// </summary>
     private async Task HandleExecutionTimeoutAsync(InternalFunctionContext context,
         TickerFunctionContext tickerFunctionContext, Activity jobActivity,
-        string reason, Stopwatch stopWatch, CancellationToken cancellationToken, ExecutionMode mode)
+        string reason, ExecutionTimer stopWatch, CancellationToken cancellationToken, ExecutionMode mode)
     {
         _ = cancellationToken; // deliberately unused — see CancellationToken.None below
         var terminalPersisted = mode != ExecutionMode.Scheduler;
@@ -934,7 +1020,7 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
             jobActivity?.SetStatus(ActivityStatusCode.Error);
 
-            _tickerQInstrumentation.LogJobCancelled(context.TickerId, context.FunctionName, reason);
+            LogJobCancelled(context, reason, TickerCancellationCause.Timeout);
 
             // Scheduler mode owns the terminal write. Worker mode only returns this outcome so
             // the scheduler can apply it to the original acquired context and fence the commit.
@@ -975,16 +1061,67 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         }
     }
 
+    /// <summary>
+    /// <see cref="Stopwatch"/>'s elapsed-milliseconds arithmetic over raw timestamps, without the
+    /// object: two of these lived per execution.
+    /// </summary>
+    private struct ExecutionTimer
+    {
+        private long _start;   // 0 while not running
+        private long _elapsed; // ticks accumulated while stopped
+
+        internal static ExecutionTimer StartNew() => new() { _start = Stopwatch.GetTimestamp() };
+
+        internal void Restart()
+        {
+            _elapsed = 0;
+            _start = Stopwatch.GetTimestamp();
+        }
+
+        internal void Stop()
+        {
+            if (_start == 0) return;
+            _elapsed += Stopwatch.GetTimestamp() - _start;
+            _start = 0;
+        }
+
+        internal readonly long ElapsedMilliseconds =>
+            (_elapsed + (_start != 0 ? Stopwatch.GetTimestamp() - _start : 0)) * 1000 / Stopwatch.Frequency;
+    }
+
+    /// <summary>Scheduler-mode progress for any execution; the execution's context is the state.</summary>
+    private sealed class SchedulerProgressReporter(TickerExecutionTaskHandler handler) : ITickerProgressReporter
+    {
+        public async Task ReportAsync(object state, double percent, string message, CancellationToken token)
+        {
+            var context = (InternalFunctionContext)state;
+            var update = new TickerProgressUpdate
+            {
+                TickerId = context.TickerId,
+                Type = context.Type,
+                ParentId = context.ParentId,
+                ChainRootId = context.ChainRootId,
+                ChainGeneration = context.ChainGeneration,
+                AcquisitionToken = context.AcquisitionToken,
+                Percent = percent,
+                Message = message,
+                UpdatedAtUtc = handler._clock.UtcNow,
+            };
+            if (await handler._internalTickerManager.ReportProgressAsync(update, token).ConfigureAwait(false))
+                handler._lifecycle?.Progress(context, update);
+        }
+    }
+
     private async Task PersistExecutionUpdateAsync(
         InternalFunctionContext context,
         TickerFunctionContext executionContext)
     {
-        var terminal = context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+        var terminal = context.IsPropertyTracked(nameof(InternalFunctionContext.Status)) &&
                        context.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                            or TickerStatus.Cancelled or TickerStatus.Skipped;
         if (!executionContext.IsRemoteCallbackExecution || !terminal)
         {
-            await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None).ConfigureAwait(false);
+            await _store.UpdateTickerAsync(context).ConfigureAwait(false);
             return;
         }
 
@@ -997,12 +1134,12 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
             // An authenticated no-start proof has no retained Node execution record to finalize,
             // but its local skipped mutation is still generation-fenced and acknowledged.
-            await _internalTickerManager.UpdateTickerFromRemoteAsync(context, CancellationToken.None)
+            await _store.UpdateTickerFromRemoteAsync(context)
                 .ConfigureAwait(false);
             return;
         }
 
-        await _internalTickerManager.UpdateTickerFromRemoteAsync(context, intent, CancellationToken.None)
+        await _store.UpdateTickerFromRemoteAsync(context, intent)
             .ConfigureAwait(false);
         (_serviceProvider.GetService(typeof(INodeFinalizationWakeSignal)) as INodeFinalizationWakeSignal)?.Wake();
     }
@@ -1057,7 +1194,7 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         context.SetRetryCount(attempt);
 
         if (mode == ExecutionMode.Scheduler)
-            await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
+            await _store.UpdateTickerAsync(context);
 
         context.ResetUpdateProps();
 
@@ -1090,7 +1227,7 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         return ex;
     }
 
-    private static string SerializeException(Exception ex)
+    private static string SerializeException(Exception ex, string reason = null)
     {
         var rootException = GetRootException(ex);
         var stackTrace = new StackTrace(rootException, true);
@@ -1102,6 +1239,7 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         {
             Type = rootException.GetType().FullName ?? rootException.GetType().Name,
             Message = rootException.Message,
+            Reason = reason,
             Method = FirstStackMethod(safeStackTrace),
             SourceFile = SafeFileName(frame?.GetFileName()),
             SourceLine = sourceLine > 0 ? sourceLine : null,
