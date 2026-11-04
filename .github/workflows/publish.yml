@@ -250,18 +250,12 @@ jobs:
               --repository-commit "$SOURCE_SHA"
           done
 
-      - name: Verify publication identity is configured
-        env:
-          NUGET_USER: ${{ vars.NUGET_USER }}
-        run: |
-          test -n "$NUGET_USER" || { echo "NUGET_USER (the nuget.org user that owns the Trusted Publishing policy) is not configured" >&2; exit 1; }
-
-      # The policy on nuget.org trusts Arcenox-co/TickerQ, publish.yml, and the production-publish environment.
+      # The Arcenox policy on nuget.org trusts Arcenox-co/TickerQ, publish.yml, and the production-publish environment.
       - name: Log in to NuGet with Trusted Publishing
         id: nuget-login
         uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
         with:
-          user: ${{ vars.NUGET_USER }}
+          user: Arcenox
 
       - name: Publish missing NuGet artifacts
         env:
