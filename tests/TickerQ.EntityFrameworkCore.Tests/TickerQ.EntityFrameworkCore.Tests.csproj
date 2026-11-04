@@ -24,7 +24,9 @@
     <PackageReference Include="NSubstitute" Version="5.3.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="Testcontainers.PostgreSql" Version="4.15.0" />
-    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" PrivateAssets="All" />
+    <!-- A patched floor below .NET 11; on 11 DataProtection (via TickerQ.Integrations) needs the line's own release. -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" PrivateAssets="All" Condition="'$(TickerQDotNetMajor)' &lt; '11'" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="$(TickerQPatchedVersion)" PrivateAssets="All" Condition="'$(TickerQDotNetMajor)' &gt;= '11'" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
   </ItemGroup>
