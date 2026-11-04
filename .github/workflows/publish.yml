@@ -84,6 +84,11 @@ jobs:
     needs: authenticate
     runs-on: ubuntu-latest
     environment: production-publish
+    permissions:
+      actions: read
+      contents: read
+      # NuGet Trusted Publishing: the job's OIDC token is exchanged for a short-lived push key.
+      id-token: write
 
     steps:
       - name: Checkout trusted publication policy
@@ -245,15 +250,22 @@ jobs:
               --repository-commit "$SOURCE_SHA"
           done
 
-      - name: Verify publication credentials are configured
+      - name: Verify publication identity is configured
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          NUGET_USER: ${{ vars.NUGET_USER }}
         run: |
-          test -n "$NUGET_API_KEY" || { echo "NUGET_API_KEY is not configured" >&2; exit 1; }
+          test -n "$NUGET_USER" || { echo "NUGET_USER (the nuget.org user that owns the Trusted Publishing policy) is not configured" >&2; exit 1; }
+
+      # The policy on nuget.org trusts Arcenox-co/TickerQ, publish.yml, and the production-publish environment.
+      - name: Log in to NuGet with Trusted Publishing
+        id: nuget-login
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        with:
+          user: ${{ vars.NUGET_USER }}
 
       - name: Publish missing NuGet artifacts
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
         run: |
           set -euo pipefail
           shopt -s nullglob
