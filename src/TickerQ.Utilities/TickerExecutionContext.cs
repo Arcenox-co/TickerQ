@@ -67,29 +67,34 @@ internal class TickerExecutionContext
 
    internal static void CacheFunctionReferences(Span<InternalFunctionContext> functions)
    {
-      var pending = new Stack<InternalFunctionContext>();
+      // Roots are cached straight from the span; a stack exists only for chain children.
+      Stack<InternalFunctionContext> pending = null;
       for (var i = 0; i < functions.Length; i++)
-         pending.Push(functions[i]);
+         CacheFunctionReference(functions[i], ref pending);
 
-      while (pending.TryPop(out var context))
+      while (pending != null && pending.TryPop(out var context))
+         CacheFunctionReference(context, ref pending);
+   }
+
+   private static void CacheFunctionReference(InternalFunctionContext context, ref Stack<InternalFunctionContext> pending)
+   {
+      if (TickerChainInfrastructure.IsParallelGroup(context.FunctionName))
       {
-         if (TickerChainInfrastructure.IsParallelGroup(context.FunctionName))
-         {
-            context.CachedDelegate = TickerChainInfrastructure.ParallelGroupDelegate;
-            context.CachedPriority = TickerTaskPriority.Normal;
-            context.CachedMaxConcurrency = 0;
-         }
-         else if (TickerFunctionProvider.TickerFunctions.TryGetValue(context.FunctionName, out var tickerItem))
-         {
-            context.CachedDelegate = tickerItem.Delegate;
-            context.CachedPriority = tickerItem.Priority;
-            context.CachedMaxConcurrency = tickerItem.MaxConcurrency;
-         }
+         context.CachedDelegate = TickerChainInfrastructure.ParallelGroupDelegate;
+         context.CachedPriority = TickerTaskPriority.Normal;
+         context.CachedMaxConcurrency = 0;
+      }
+      else if (TickerFunctionProvider.TickerFunctions.TryGetValue(context.FunctionName, out var tickerItem))
+      {
+         context.CachedDelegate = tickerItem.Delegate;
+         context.CachedPriority = tickerItem.Priority;
+         context.CachedMaxConcurrency = tickerItem.MaxConcurrency;
+      }
 
-         if (context.TimeTickerChildren is { Count: > 0 })
-         {
-            foreach (var child in context.TimeTickerChildren) pending.Push(child);
-         }
+      if (context.TimeTickerChildren is { Count: > 0 })
+      {
+         pending ??= new Stack<InternalFunctionContext>();
+         foreach (var child in context.TimeTickerChildren) pending.Push(child);
       }
    }
 }

@@ -329,46 +329,53 @@ namespace TickerQ.Utilities.Managers
                           "or legacy runtime partition adoption may be in progress."));
                 }
 
-                return await CompleteMutationAsync(new TickerResult<TTimeTicker>(entity, affected), async () =>
-                {
-                    _lifecycle?.CreatedTree(entity, _executionContext.RuntimePartition.StorageKey);
-                    // Notify the dashboard BEFORE the dispatch path — for tickers
-                    // scheduled at "now" the dispatcher acquires + runs immediately
-                    // and execution often finishes before this method returns. If
-                    // the SignalR push happens after dispatch, the dashboard never
-                    // sees the row in its Idle/Queued/InProgress states; it just
-                    // appears already Done. Sending the scope.changed event up
-                    // front guarantees the list refetches the moment the row is
-                    // committed to the DB.
-                    await NotifyAsync(() => _notificationHubSender.AddTimeTickerNotifyAsync(entity.Id)).ConfigureAwait(false);
-
-                    // Only try to dispatch immediately if dispatcher is enabled (background services running)
-                    if (_dispatcher.IsEnabled && entity.Status == TickerStatus.Idle && executionTime <= now.AddSeconds(1))
-                    {
-                        // Acquire and mark InProgress in one provider call
-                        var acquired = await _persistenceProvider
-                            .AcquireImmediateTimeTickersAsync([entity.Id], CancellationToken.None)
-                            .ConfigureAwait(false);
-
-                        if (acquired.Length > 0)
-                        {
-                            var contexts = BuildImmediateContextsFromNonGeneric(acquired);
-                            CacheFunctionReferences(contexts.AsSpan());
-                            // CancellationToken.None on purpose: the caller's token is often an HTTP
-                            // request's — the dispatched job (and its terminal status write)
-                            // must outlive the request that scheduled it.
-                            await _dispatcher.DispatchAsync(contexts, CancellationToken.None).ConfigureAwait(false);
-                        }
-                    }
-                    else if (entity.Status == TickerStatus.Idle)
-                    {
-                        _tickerQHostScheduler.RestartIfNeeded(executionTime);
-                    }
-                }).ConfigureAwait(false);
+                // The follow-up is a method rather than a CompleteMutationAsync continuation, so adding
+                // a job allocates no delegate or closure for it.
+                try { await AfterTimeTickerAddedAsync(entity, executionTime, now).ConfigureAwait(false); }
+                catch (Exception exception) { OnMutationFollowUpFailed(exception); }
+                return new TickerResult<TTimeTicker>(entity, affected);
             }
             catch (Exception e)
             {
                 return new TickerResult<TTimeTicker>(e);
+            }
+        }
+
+        private async Task AfterTimeTickerAddedAsync(TTimeTicker entity, DateTime executionTime, DateTime now)
+        {
+            _lifecycle?.CreatedTree(entity, _executionContext.RuntimePartition.StorageKey);
+            // Notify the dashboard BEFORE the dispatch path — for tickers
+            // scheduled at "now" the dispatcher acquires + runs immediately
+            // and execution often finishes before this method returns. If
+            // the SignalR push happens after dispatch, the dashboard never
+            // sees the row in its Idle/Queued/InProgress states; it just
+            // appears already Done. Sending the scope.changed event up
+            // front guarantees the list refetches the moment the row is
+            // committed to the DB.
+            await NotifyAsync((Sender: _notificationHubSender, Id: entity.Id),
+                static state => state.Sender.AddTimeTickerNotifyAsync(state.Id)).ConfigureAwait(false);
+
+            // Only try to dispatch immediately if dispatcher is enabled (background services running)
+            if (_dispatcher.IsEnabled && entity.Status == TickerStatus.Idle && executionTime <= now.AddSeconds(1))
+            {
+                // Acquire and mark InProgress in one provider call
+                var acquired = await _persistenceProvider
+                    .AcquireImmediateTimeTickersAsync([entity.Id], CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                if (acquired.Length > 0)
+                {
+                    var contexts = BuildImmediateContextsFromNonGeneric(acquired);
+                    CacheFunctionReferences(contexts.AsSpan());
+                    // CancellationToken.None on purpose: the caller's token is often an HTTP
+                    // request's — the dispatched job (and its terminal status write)
+                    // must outlive the request that scheduled it.
+                    await _dispatcher.DispatchAsync(contexts, CancellationToken.None).ConfigureAwait(false);
+                }
+            }
+            else if (entity.Status == TickerStatus.Idle)
+            {
+                _tickerQHostScheduler.RestartIfNeeded(executionTime);
             }
         }
 
@@ -381,7 +388,7 @@ namespace TickerQ.Utilities.Managers
             if (entity.Id == Guid.Empty)
                 entity.Id = Guid.NewGuid();
 
-            if (ValidateAndStampTimeTickerGraph([entity]) is { } requestError)
+            if (ValidateAndStampTimeTicker(entity) is { } requestError)
                 return requestError;
 
             entity.ExecutionTime = entity.ExecutionTime == null
@@ -401,9 +408,9 @@ namespace TickerQ.Utilities.Managers
             if (entity.Id == Guid.Empty)
                 entity.Id = Guid.NewGuid();
 
-            if (TickerFunctionProvider.TickerFunctions.All(x => x.Key != entity?.Function))
+            if (entity.Function is null || !TickerFunctionProvider.TickerFunctions.ContainsKey(entity.Function))
                 return new TickerResult<TCronTicker>(
-                    new TickerValidatorException($"Cannot find TickerFunction with name {entity?.Function}"));
+                    new TickerValidatorException($"Cannot find TickerFunction with name {entity.Function}"));
 
             if (ValidateAndStampCron(entity, _persistenceProvider.SupportsCronChains,
                     _persistenceProvider.SupportsCronCatchUp) is { } requestError)
@@ -425,11 +432,14 @@ namespace TickerQ.Utilities.Managers
                 if (affected <= 0)
                     return new TickerResult<TCronTicker>(new TickerValidatorException("No cron ticker was inserted. It may already exist or mutation admission may have changed."));
 
-                return await CompleteMutationAsync(new TickerResult<TCronTicker>(entity, affected), async () =>
+                try
                 {
-                    await NotifyAsync(() => _notificationHubSender.AddCronTickerNotifyAsync(entity.Id)).ConfigureAwait(false);
+                    await NotifyAsync((Sender: _notificationHubSender, Id: entity.Id),
+                        static state => state.Sender.AddCronTickerNotifyAsync(state.Id)).ConfigureAwait(false);
                     _tickerQHostScheduler.RestartIfNeeded(nextOccurrence.Value);
-                }).ConfigureAwait(false);
+                }
+                catch (Exception exception) { OnMutationFollowUpFailed(exception); }
+                return new TickerResult<TCronTicker>(entity, affected);
             }
             catch (Exception e)
             {
@@ -753,6 +763,8 @@ namespace TickerQ.Utilities.Managers
 
         private static TickerValidatorException FindChildPolicy(TTimeTicker root)
         {
+            if (root.GetChildrenForRead() is not { Count: > 0 })
+                return null;
             var pending = new Stack<TTimeTicker>(root.GetChildrenForRead().Reverse());
             while (pending.TryPop(out var child))
             {
@@ -764,7 +776,8 @@ namespace TickerQ.Utilities.Managers
             return null;
         }
 
-        private async Task<DateTime?> GetNextAllowedCronOccurrenceAsync(
+        // ValueTask: without a schedule policy the answer is synchronous and needs no Task.
+        private async ValueTask<DateTime?> GetNextAllowedCronOccurrenceAsync(
             TCronTicker cron, DateTime afterUtc, CancellationToken cancellationToken)
         {
             if (!string.IsNullOrWhiteSpace(cron.TimeZoneId))
@@ -862,7 +875,7 @@ namespace TickerQ.Utilities.Managers
             TCronTicker cron, bool supportsCronChains, bool supportsCronCatchUp)
         {
             if (ValidateMissedExecution(cron) is { } missedError) return missedError;
-            if (!Enum.IsDefined(typeof(CronCatchUpMode), cron.CatchUpMode))
+            if (!Enum.IsDefined(cron.CatchUpMode))
                 return new TickerValidatorException("Unknown cron catch-up mode.");
             if (cron.CatchUpMode == CronCatchUpMode.RunLatest &&
                 (cron.MissedExecutionAction != MissedExecutionAction.Skip || !cron.MaximumLateness.HasValue))
@@ -899,7 +912,7 @@ namespace TickerQ.Utilities.Managers
 
         private static TickerValidatorException ValidateMissedExecution(BaseTickerEntity ticker)
         {
-            if (!Enum.IsDefined(typeof(MissedExecutionAction), ticker.MissedExecutionAction))
+            if (!Enum.IsDefined(ticker.MissedExecutionAction))
                 return new TickerValidatorException("Unknown missed-execution action.");
             if (ticker.MaximumLateness is { } maximum && maximum < TimeSpan.Zero)
                 return new TickerValidatorException("Maximum lateness cannot be negative.");
@@ -912,6 +925,20 @@ namespace TickerQ.Utilities.Managers
         {
             var validation = TickerRequestPayloadValidator.Validate(entity.Function, request);
             return StampAcceptedRequest(entity, validation);
+        }
+
+        /// <summary>
+        /// <see cref="ValidateAndStampTimeTickerGraph"/> for one root. A standalone job, the common case,
+        /// is validated without the traversal stack, path set and accepted list a chain needs.
+        /// </summary>
+        internal static TickerValidatorException ValidateAndStampTimeTicker(TTimeTicker root)
+        {
+            if (root?.GetChildrenForRead() is not { Count: 0 } children)
+                return ValidateAndStampTimeTickerGraph([root]);
+            if (ValidateTimeTickerNode(root, children, nested: false) is { } error)
+                return error;
+            return StampAcceptedRequest(root,
+                TickerRequestPayloadValidator.Validate(TickerFunctionProvider.Snapshot, root.Function, root.Request));
         }
 
         internal static TickerValidatorException ValidateAndStampTimeTickerGraph(IEnumerable<TTimeTicker> roots)
@@ -957,28 +984,8 @@ namespace TickerQ.Utilities.Managers
                 if (current is null)
                     return new TickerValidatorException("Ticker and chain children must not be null.");
                 var children = current.GetChildrenForRead();
-                if (children is null)
-                    return new TickerValidatorException("Ticker Children must not be null. Use an empty collection for standalone jobs.");
-                if (!Enum.IsDefined(typeof(ChainDeleteBehavior), current.DeleteBehavior))
-                    return new TickerValidatorException("Unknown chain deletion behavior.");
-                if (ValidateMissedExecution(current) is { } missedError)
-                    return missedError;
-                if (activePath.Count > 0 &&
-                    (current.MissedExecutionAction != MissedExecutionAction.RunOnce || current.MaximumLateness.HasValue))
-                    return new TickerValidatorException("Set the missed-execution policy on the chain root only.");
-                if ((activePath.Count > 0 || current.ParentId.HasValue) && current.DeleteBehavior != ChainDeleteBehavior.Cascade)
-                    return new TickerValidatorException("Set deletion behavior on the chain root only.");
-                if (TickerChainInfrastructure.IsParallelGroup(current.Function))
-                {
-                    if (activePath.Count == 0)
-                        return new TickerValidatorException("A parallel group cannot be the root of a time-ticker chain.");
-                    if (!children.Any(child => child != null &&
-                            TickerChainInfrastructure.IsParallelBranchCondition(
-                                child.RunCondition ?? RunCondition.OnAnyCompletedStatus)))
-                        return new TickerValidatorException("A parallel group requires at least one parallel branch.");
-                    if (current.Request is { Length: > 0 })
-                        return new TickerValidatorException("A parallel group cannot carry a request payload.");
-                }
+                if (ValidateTimeTickerNode(current, children, nested: activePath.Count > 0) is { } nodeError)
+                    return nodeError;
                 if (!activePath.Add(current))
                     return new TickerValidatorException(
                         $"Cyclic time ticker graph detected for TickerFunction '{current.Function}': " +
@@ -993,6 +1000,36 @@ namespace TickerQ.Utilities.Managers
                 // without consuming the CLR stack for valid, deeply nested time chains.
                 pending.Push((current, true));
                 foreach (var child in children.Reverse()) pending.Push((child, false));
+            }
+            return null;
+        }
+
+        // The rules for one node of a time-ticker graph, apart from cycles and its request payload.
+        // nested: the node is below the root of the graph being validated.
+        private static TickerValidatorException ValidateTimeTickerNode(
+            TTimeTicker current, ICollection<TTimeTicker> children, bool nested)
+        {
+            if (children is null)
+                return new TickerValidatorException("Ticker Children must not be null. Use an empty collection for standalone jobs.");
+            if (!Enum.IsDefined(current.DeleteBehavior))
+                return new TickerValidatorException("Unknown chain deletion behavior.");
+            if (ValidateMissedExecution(current) is { } missedError)
+                return missedError;
+            if (nested &&
+                (current.MissedExecutionAction != MissedExecutionAction.RunOnce || current.MaximumLateness.HasValue))
+                return new TickerValidatorException("Set the missed-execution policy on the chain root only.");
+            if ((nested || current.ParentId.HasValue) && current.DeleteBehavior != ChainDeleteBehavior.Cascade)
+                return new TickerValidatorException("Set deletion behavior on the chain root only.");
+            if (TickerChainInfrastructure.IsParallelGroup(current.Function))
+            {
+                if (!nested)
+                    return new TickerValidatorException("A parallel group cannot be the root of a time-ticker chain.");
+                if (!children.Any(child => child != null &&
+                        TickerChainInfrastructure.IsParallelBranchCondition(
+                            child.RunCondition ?? RunCondition.OnAnyCompletedStatus)))
+                    return new TickerValidatorException("A parallel group requires at least one parallel branch.");
+                if (current.Request is { Length: > 0 })
+                    return new TickerValidatorException("A parallel group cannot carry a request payload.");
             }
             return null;
         }
@@ -1468,25 +1505,31 @@ namespace TickerQ.Utilities.Managers
             TickerResult<TEntity> committed, Func<Task> continuation) where TEntity : class
         {
             try { await continuation().ConfigureAwait(false); }
-            catch (Exception exception)
-            {
-                _logger.LogError(exception, "Ticker mutation committed, but scheduler follow-up failed. The persisted job remains available for recovery.");
-                // A saturated in-process admission queue can decline an immediate dispatch.
-                // The mutation remains committed; wake normal acquisition to retry the job
-                // instead of waiting for an unrelated schedule or the fallback interval.
-                try { _tickerQHostScheduler.Restart(); }
-                catch (Exception wakeException)
-                {
-                    _logger.LogWarning(wakeException,
-                        "The scheduler could not be woken after a committed mutation; fallback recovery will retry it.");
-                }
-            }
+            catch (Exception exception) { OnMutationFollowUpFailed(exception); }
             return committed;
         }
 
-        private async Task NotifyAsync(Func<Task> notify)
+        private void OnMutationFollowUpFailed(Exception exception)
         {
-            try { await notify().ConfigureAwait(false); }
+            _logger.LogError(exception, "Ticker mutation committed, but scheduler follow-up failed. The persisted job remains available for recovery.");
+            // A saturated in-process admission queue can decline an immediate dispatch.
+            // The mutation remains committed; wake normal acquisition to retry the job
+            // instead of waiting for an unrelated schedule or the fallback interval.
+            try { _tickerQHostScheduler.Restart(); }
+            catch (Exception wakeException)
+            {
+                _logger.LogWarning(wakeException,
+                    "The scheduler could not be woken after a committed mutation; fallback recovery will retry it.");
+            }
+        }
+
+        private Task NotifyAsync(Func<Task> notify)
+            => NotifyAsync(notify, static callback => callback());
+
+        // A static callback with explicit state, so the add paths allocate no closure for it.
+        private async Task NotifyAsync<TState>(TState state, Func<TState, Task> notify)
+        {
+            try { await notify(state).ConfigureAwait(false); }
             catch (Exception exception)
             {
                 // The mutation is already committed. A failed UI hint must never invite

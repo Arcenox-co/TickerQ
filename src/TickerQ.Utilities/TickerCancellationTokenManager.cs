@@ -79,11 +79,25 @@ namespace TickerQ.Utilities
         internal static CancellationTokenSource TryRegisterAcquired(
             InternalFunctionContext context, bool isDue, out bool generationConflict,
             params CancellationToken[] linkedTokens)
+            => TryRegisterAcquired(context, isDue, linkedTokens is { Length: > 0 }
+                ? CancellationTokenSource.CreateLinkedTokenSource(linkedTokens)
+                : new CancellationTokenSource(), out generationConflict);
+
+        /// <summary>
+        /// <see cref="TryRegisterAcquired(InternalFunctionContext, bool, out bool, CancellationToken[])"/> linked
+        /// to one token, the shape every execution uses, without allocating a params array per job.
+        /// </summary>
+        internal static CancellationTokenSource TryRegisterAcquired(
+            InternalFunctionContext context, bool isDue, CancellationToken linkedToken, out bool generationConflict)
+            => TryRegisterAcquired(context, isDue, linkedToken.CanBeCanceled
+                ? CancellationTokenSource.CreateLinkedTokenSource(linkedToken)
+                : new CancellationTokenSource(), out generationConflict);
+
+        private static CancellationTokenSource TryRegisterAcquired(
+            InternalFunctionContext context, bool isDue, CancellationTokenSource cancellationSource,
+            out bool generationConflict)
         {
             generationConflict = false;
-            var cancellationSource = linkedTokens is { Length: > 0 }
-                ? CancellationTokenSource.CreateLinkedTokenSource(linkedTokens)
-                : new CancellationTokenSource();
 
             var details = new TickerCancellationTokenDetails
             {

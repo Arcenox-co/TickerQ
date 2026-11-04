@@ -12,40 +12,40 @@ namespace TickerQ.Utilities.Infrastructure
     /// made on the current async flow. Pushed by the execution task handler just
     /// before invoking the ticker function body and restored in a using/finally.
     /// </summary>
-    internal sealed class TickerExecutionLogScope
+    internal sealed class TickerExecutionLogScope : IDisposable
     {
         private static readonly AsyncLocal<TickerExecutionLogScope> Ambient = new AsyncLocal<TickerExecutionLogScope>();
 
         public static TickerExecutionLogScope Current => Ambient.Value;
 
+        private readonly TickerExecutionLogScope _previous;
+
         public Guid TickerId { get; }
         public string FunctionName { get; }
         public bool IsEphemeral { get; }
 
-        private TickerExecutionLogScope(Guid tickerId, string functionName, bool isEphemeral)
+        private TickerExecutionLogScope(Guid tickerId, string functionName, bool isEphemeral,
+            TickerExecutionLogScope previous)
         {
             TickerId = tickerId;
             FunctionName = functionName;
             IsEphemeral = isEphemeral;
+            _previous = previous;
         }
 
         /// <summary>
         /// Push a new scope onto the async flow. Returns a disposable that restores
         /// the previous scope on dispose — safe to nest (chained child tickers).
+        /// The scope is its own restorer, so a push allocates one object.
         /// </summary>
         public static IDisposable Push(Guid tickerId, string functionName, bool isEphemeral = false)
         {
-            var prev = Ambient.Value;
-            Ambient.Value = new TickerExecutionLogScope(tickerId, functionName, isEphemeral);
-            return new Pop(prev);
+            var scope = new TickerExecutionLogScope(tickerId, functionName, isEphemeral, Ambient.Value);
+            Ambient.Value = scope;
+            return scope;
         }
 
-        private sealed class Pop : IDisposable
-        {
-            private readonly TickerExecutionLogScope _prev;
-            public Pop(TickerExecutionLogScope prev) { _prev = prev; }
-            public void Dispose() { Ambient.Value = _prev; }
-        }
+        void IDisposable.Dispose() => Ambient.Value = _previous;
     }
 
     /// <summary>One captured ILogger call, tagged with the execution that produced it.</summary>

@@ -681,58 +681,68 @@ namespace TickerQ.Provider
         {
             var successful = functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(WriteGraph(() =>
+            // A static callback with explicit state: every terminal commit would otherwise allocate a closure.
+            return Task.FromResult(WriteGraph(
+                (Provider: this, Context: functionContext, EnforceRemoteChildToken: enforceRemoteChildToken,
+                    Successful: successful, Token: cancellationToken),
+                static state => state.Provider.CommitTerminalTickerLocked(
+                    state.Context, state.EnforceRemoteChildToken, state.Successful, state.Token)));
+        }
+
+        // CommitTerminalTickerCoreAsync's write, run under the graph write lock.
+        private bool CommitTerminalTickerLocked(
+            InternalFunctionContext functionContext, bool enforceRemoteChildToken, bool successful,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (functionContext.Type == TickerType.CronTickerOccurrence)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (functionContext.Type == TickerType.CronTickerOccurrence)
-                {
-                    if (!CronOccurrences.TryGetValue(functionContext.TickerId, out var occurrence) ||
-                        !functionContext.AcquisitionToken.HasValue || occurrence.LockHolder != _lockHolder ||
-                        occurrence.AcquisitionToken != functionContext.AcquisitionToken)
-                        return false;
-
-                    var updatedOccurrence = CloneCronOccurrence(occurrence);
-                    ApplyFunctionContextToCronOccurrence(updatedOccurrence, functionContext);
-                    if (!TryUpdateCronOccurrence(functionContext.TickerId, updatedOccurrence, occurrence,
-                            requireRunnableActivation: false))
-                        return false;
-                    if (successful)
-                        ReplaceCommittedResult(CronOccurrenceResults, functionContext);
-                    return true;
-                }
-
-                if (!TimeTickers.TryGetValue(functionContext.TickerId, out var ticker) ||
-                    !HasCurrentChainGeneration(functionContext, ticker))
+                if (!CronOccurrences.TryGetValue(functionContext.TickerId, out var occurrence) ||
+                    !functionContext.AcquisitionToken.HasValue || occurrence.LockHolder != _lockHolder ||
+                    occurrence.AcquisitionToken != functionContext.AcquisitionToken)
                     return false;
 
-                if (functionContext.ParentId == null)
-                {
-                    if (!functionContext.AcquisitionToken.HasValue || ticker.LockHolder != _lockHolder ||
-                        ticker.AcquisitionToken != functionContext.AcquisitionToken)
-                        return false;
-                }
-                else
-                {
-                    if (ticker.ParentId != functionContext.ParentId)
-                        return false;
-                    // A remote child dispatch carries the root acquisition token. Bind that signed
-                    // identity to the durable aggregate generation without requiring children to
-                    // persist a duplicate acquisition token of their own.
-                    if (enforceRemoteChildToken &&
-                        (!functionContext.AcquisitionToken.HasValue ||
-                         functionContext.AcquisitionToken != functionContext.ChainGeneration))
-                        return false;
-                }
-
-                var updatedTicker = CloneTicker(ticker);
-                ApplyFunctionContextToTicker(updatedTicker, functionContext);
-                if (!TryUpdateTimeTicker(functionContext.TickerId, updatedTicker, ticker,
+                var updatedOccurrence = CloneCronOccurrence(occurrence);
+                ApplyFunctionContextToCronOccurrence(updatedOccurrence, functionContext);
+                if (!TryUpdateCronOccurrence(functionContext.TickerId, updatedOccurrence, occurrence,
                         requireRunnableActivation: false))
                     return false;
                 if (successful)
-                    ReplaceCommittedResult(TimeTickerResults, functionContext);
+                    ReplaceCommittedResult(CronOccurrenceResults, functionContext);
                 return true;
-            }));
+            }
+
+            if (!TimeTickers.TryGetValue(functionContext.TickerId, out var ticker) ||
+                !HasCurrentChainGeneration(functionContext, ticker))
+                return false;
+
+            if (functionContext.ParentId == null)
+            {
+                if (!functionContext.AcquisitionToken.HasValue || ticker.LockHolder != _lockHolder ||
+                    ticker.AcquisitionToken != functionContext.AcquisitionToken)
+                    return false;
+            }
+            else
+            {
+                if (ticker.ParentId != functionContext.ParentId)
+                    return false;
+                // A remote child dispatch carries the root acquisition token. Bind that signed
+                // identity to the durable aggregate generation without requiring children to
+                // persist a duplicate acquisition token of their own.
+                if (enforceRemoteChildToken &&
+                    (!functionContext.AcquisitionToken.HasValue ||
+                     functionContext.AcquisitionToken != functionContext.ChainGeneration))
+                    return false;
+            }
+
+            var updatedTicker = CloneTicker(ticker);
+            ApplyFunctionContextToTicker(updatedTicker, functionContext);
+            if (!TryUpdateTimeTicker(functionContext.TickerId, updatedTicker, ticker,
+                    requireRunnableActivation: false))
+                return false;
+            if (successful)
+                ReplaceCommittedResult(TimeTickerResults, functionContext);
+            return true;
         }
 
         private static void ReplaceCommittedResult(
@@ -1370,18 +1380,21 @@ namespace TickerQ.Provider
             // Structural insert of whole aggregates: take the write lock so a graph
             // reader (or a concurrent replacement/remove) never observes a partially
             // added root/children set. Matches ReplaceTimeTickerChainAsync fencing.
-            var count = WriteGraph(() =>
+            var count = WriteGraph((Provider: this, Tickers: tickers), static state =>
             {
-                if (!IsStructuralMutationActivationState())
+                var (provider, batch) = state;
+                if (!provider.IsStructuralMutationActivationState())
                     return 0;
+                if (batch is [{ ParentId: null } single] && single.GetChildrenForRead() is not { Count: > 0 })
+                    return provider.AddStandaloneTicker(single);
                 // Share the batch lookup across roots. Rebuilding it while resolving each
                 // root makes an otherwise linear independent-job insert quadratic.
-                var suppliedById = tickers.ToDictionary(x => x.Id);
+                var suppliedById = batch.ToDictionary(x => x.Id);
                 var added = 0;
-                foreach (var ticker in tickers)
+                foreach (var ticker in batch)
                 {
-                    var (rootId, generation) = ResolveInsertedChainIdentity(ticker, suppliedById);
-                    added += AddTickerWithChildren(ticker, chainRootId: rootId,
+                    var (rootId, generation) = provider.ResolveInsertedChainIdentity(ticker, suppliedById);
+                    added += provider.AddTickerWithChildren(ticker, chainRootId: rootId,
                         chainGeneration: generation);
                 }
 
@@ -1389,6 +1402,14 @@ namespace TickerQ.Provider
             });
 
             return Task.FromResult(count);
+        }
+
+        // AddTickerWithChildren for one job with no parent and no children, the common single add:
+        // it is its own chain root, so there is no batch lookup or traversal stack to build.
+        private int AddStandaloneTicker(TTimeTicker ticker)
+        {
+            ticker.ChainRootId = ticker.Id;
+            return TimeTickers.TryAdd(ticker.Id, ticker) ? 1 : 0;
         }
         
         private (Guid RootId, Guid? Generation) ResolveInsertedChainIdentity(
@@ -1683,6 +1704,10 @@ namespace TickerQ.Provider
 
         // Runs a structural graph mutation under the exclusive write lock.
         private T WriteGraph<T>(Func<T> write)
+            => WriteGraph(write, static callback => callback());
+
+        // The same, with explicit state so a hot path can pass a static callback and allocate no closure.
+        private T WriteGraph<TState, T>(TState state, Func<TState, T> write)
         {
             GraphLock.EnterWriteLock();
             try
@@ -1690,7 +1715,7 @@ namespace TickerQ.Provider
                 if (IsLegacyAdoptionFenced())
                     throw new InvalidOperationException(
                         "Legacy runtime state is fenced by runtime partition adoption.");
-                return write();
+                return write(state);
             }
             finally
             {
@@ -2214,12 +2239,12 @@ namespace TickerQ.Provider
 
         public Task<int> InsertCronTickers(TCronTicker[] tickers, CancellationToken cancellationToken)
         {
-            return Task.FromResult(WriteGraph(() =>
+            return Task.FromResult(WriteGraph((Provider: this, Tickers: tickers), static state =>
             {
-                if (!IsStructuralMutationActivationState()) return 0;
+                if (!state.Provider.IsStructuralMutationActivationState()) return 0;
                 var count = 0;
-                foreach (var ticker in tickers)
-                    if (CronTickers.TryAdd(ticker.Id, ticker)) count++;
+                foreach (var ticker in state.Tickers)
+                    if (state.Provider.CronTickers.TryAdd(ticker.Id, ticker)) count++;
                 return count;
             }));
         }
@@ -3248,6 +3273,8 @@ namespace TickerQ.Provider
 
         private void ClearDescendantProgress(Guid rootId)
         {
+            // A standalone job, the common case, has no descendants to clear and needs no traversal stack.
+            if (!ChildrenIndex.ContainsKey(rootId)) return;
             var pending = new Stack<Guid>();
             pending.Push(rootId);
             while (pending.TryPop(out var parentId))
@@ -3280,12 +3307,21 @@ namespace TickerQ.Provider
                occurrence.LockHolder == _lockHolder &&
                occurrence.AcquisitionToken.HasValue;
 
-        private TTimeTicker CloneTicker(TTimeTicker ticker)
+        // A published row is replaced, never edited in place, so every state change copies the row.
+        // The built-in entity has no fields or constructor state beyond what is copied here, so a single
+        // MemberwiseClone copies it whole, without constructing through new() or re-running initializers
+        // (a fresh Id, two clock reads) only to overwrite them. A custom entity type is still constructed
+        // afresh: its own initializers may own mutable state that a shallow copy would share between
+        // versions of the row. Both keep the row's application namespace.
+        private static TTimeTicker CloneTicker(TTimeTicker ticker)
         {
+            if (ticker.GetType() == typeof(TimeTickerEntity))
+                return ticker.CreateQuerySnapshot();
 
             var cloned = new TTimeTicker
             {
                 Id = ticker.Id,
+                ApplicationNamespaceKey = ticker.ApplicationNamespaceKey,
                 Function = ticker.Function,
                 RequestContractVersion = ticker.RequestContractVersion,
                 RequestContractFingerprint = ticker.RequestContractFingerprint,
