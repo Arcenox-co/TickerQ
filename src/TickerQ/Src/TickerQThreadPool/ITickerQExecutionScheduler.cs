@@ -15,6 +15,15 @@ internal interface ITickerQExecutionScheduler
     /// whenever <paramref name="token"/> is, so callers need not link the two again.
     /// </summary>
     Task ExecuteAsync(Func<CancellationToken, Task> work, TickerTaskPriority priority, CancellationToken token = default);
+    /// <summary>
+    /// <see cref="ExecuteAsync"/> for a caller whose <paramref name="token"/> is already cancelled whenever
+    /// <paramref name="stopToken"/> is. When <paramref name="stopToken"/> is this scheduler's own stop token,
+    /// the scheduler need not link the work's token to its stop again. Any other value behaves as
+    /// <see cref="ExecuteAsync"/>.
+    /// </summary>
+    Task ExecuteStopBoundAsync(Func<CancellationToken, Task> work, TickerTaskPriority priority,
+        CancellationToken token, CancellationToken stopToken)
+        => ExecuteAsync(work, priority, token);
     int ActiveOrchestrationCount { get; }
     /// <summary>True from the moment the node stops admitting work until it is resumed.</summary>
     bool IsFrozen { get; }

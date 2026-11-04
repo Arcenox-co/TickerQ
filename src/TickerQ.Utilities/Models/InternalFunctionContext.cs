@@ -21,6 +21,13 @@ namespace TickerQ.Utilities.Models
         private int _trackedProperties;
 
         /// <summary>
+        /// While an acquired root runs under its scheduler, the scheduler stop token its cancellation source is
+        /// already registered on: that source is cancelled whenever this token is. Lets the scheduler skip linking
+        /// the attempt to the same stop token again. Default (not set) for every other execution.
+        /// </summary>
+        internal System.Threading.CancellationToken SchedulerStopToken;
+
+        /// <summary>
         /// The properties this context's next persistence write carries. Reading it materializes the
         /// set; from then on it is the authoritative store, so callers may mutate it as before.
         /// </summary>

@@ -15,6 +15,8 @@ public readonly struct WorkItem
     public readonly TickerTaskPriority Priority;
     internal readonly WorkItemCompletion Completion;
     internal readonly ExecutionContext ExecutionContext;
+    /// <summary>The caller's token is already cancelled whenever the scheduler stops.</summary>
+    internal readonly bool TokenObservesStop;
 
     public WorkItem(Func<CancellationToken, Task> work, CancellationToken userToken)
         : this(work, userToken, TickerTaskPriority.Normal)
@@ -27,10 +29,12 @@ public readonly struct WorkItem
     }
 
     internal WorkItem(Func<CancellationToken, Task> work, CancellationToken userToken,
-        TickerTaskPriority priority, WorkItemCompletion completion, ExecutionContext executionContext = null)
+        TickerTaskPriority priority, WorkItemCompletion completion, ExecutionContext executionContext = null,
+        bool tokenObservesStop = false)
     {
         Completion = completion;
         ExecutionContext = executionContext;
+        TokenObservesStop = tokenObservesStop;
         Work = work ?? throw new ArgumentNullException(nameof(work));
         UserToken = userToken;
         Priority = priority;

@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Models;
@@ -110,13 +111,13 @@ internal sealed class AcquiredExecutionQueue : IDisposable
         Task capacityWait = null;
         // Register the whole acquired batch before any queue-capacity wait. Executing work uses
         // the scheduler's drain lifetime, not the fallback scanner's earlier shutdown token.
-        var pending = new List<(InternalFunctionContext Function, CancellationTokenSource Source, AcquiredExecutionLifecycle Life)>();
+        var pending = new List<(InternalFunctionContext Function, CancellationTokenSource Source, AcquiredExecutionLifecycle Life)>(functions.Length);
         try
         {
             foreach (var function in functions)
             {
                 var source = TickerCancellationTokenManager.TryRegisterAcquired(function, isDue,
-                    out var conflict, executionStop);
+                    executionStop, out var conflict);
                 if (source == null)
                 {
                     if (conflict) await ReleaseAsync(function).ConfigureAwait(false);
@@ -190,7 +191,7 @@ internal sealed class AcquiredExecutionQueue : IDisposable
                     {
                         // Legacy schedulers combine admission and stop in one token. Preserve
                         // their existing drain behavior: the acquired source owns execution.
-                        await _scheduler.QueueAsync(_ => item.Life.ExecuteAsync(CancellationToken.None), item.Function.CachedPriority, admissionToken)
+                        await QueueOnLegacySchedulerAsync(item.Life, item.Function.CachedPriority, admissionToken)
                             .ConfigureAwait(false);
                     }
                 }
@@ -230,6 +231,12 @@ internal sealed class AcquiredExecutionQueue : IDisposable
                 if (item.Life.AbandonIfQueued()) await ReleaseAsync(item.Function).ConfigureAwait(false);
         }
     }
+
+    // Its own method, so the closure over the lifecycle exists only on this path: a lambda over the
+    // foreach variable in PublishAsync would allocate a closure for every published job.
+    private ValueTask QueueOnLegacySchedulerAsync(AcquiredExecutionLifecycle life, TickerTaskPriority priority,
+        CancellationToken admissionToken)
+        => _scheduler.QueueAsync(_ => life.ExecuteAsync(CancellationToken.None), priority, admissionToken);
 
     private Task TrackCancellationReleaseAsync(AcquiredExecutionLifecycle owner, InternalFunctionContext function)
     {
@@ -376,10 +383,17 @@ internal sealed class AcquiredExecutionQueue : IDisposable
                 // and attempts. Include scheduler disposal in that same lifetime.
                 using var schedulerCancellation = schedulerToken.UnsafeRegister(
                     static state => ((AcquiredExecutionLifecycle)state).CancelForSchedulerStop(), this);
+                // The registration above cancels _source when schedulerToken fires, for as long as the
+                // handler runs. Telling the handler so lets its attempts skip a second stop link.
+                _function.SchedulerStopToken = schedulerToken;
                 await _owner._handler.ExecuteRegisteredTaskAsync(_function, _isDue, _source, _source.Token)
                     .ConfigureAwait(false);
             }
-            finally { CompleteExecution(); }
+            finally
+            {
+                _function.SchedulerStopToken = default;
+                CompleteExecution();
+            }
         }
 
         private void CancelForSchedulerStop()

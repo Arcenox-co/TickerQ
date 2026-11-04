@@ -24,23 +24,28 @@ internal sealed class TickerLifecycleLogger(ITickerExecutionLogStore store, Exec
         bool isEphemeral = false)
     {
         if (!IsEnabled(LogLevel.Information)) return;
-        Write(new InternalFunctionContext { TickerId = id, FunctionName = function, Type = type,
-            RuntimePartitionKey = partition, IsTestRun = isEphemeral },
-            TickerLifecycleEvent.Created, TickerStatus.Idle,
-            type == TickerType.CronTickerOccurrence ? "Cron occurrence created." : "Job created.", createdAt);
+        WriteCreated(id, function, type, createdAt, partition, isEphemeral);
     }
 
     public void CreatedTree<T>(TimeTickerEntity<T> root, string partition) where T : TimeTickerEntity<T>
     {
         if (!IsEnabled(LogLevel.Information) || root == null) return;
+        // Read children without initializing an empty collection on every standalone job.
+        var rootChildren = root.GetChildrenForRead();
+        if (rootChildren is not { Count: > 0 })
+        {
+            // A standalone job, the common case, needs no traversal state.
+            WriteCreated(root.Id, root.Function, TickerType.TimeTicker, root.CreatedAt, partition, false);
+            return;
+        }
         var pending = new Stack<TimeTickerEntity<T>>();
         var visited = new HashSet<Guid>();
         pending.Push(root);
         while (pending.TryPop(out var node))
         {
             if (!visited.Add(node.Id)) continue;
-            Created(node.Id, node.Function, TickerType.TimeTicker, node.CreatedAt, partition);
-            if (node.Children != null) foreach (var child in node.Children) pending.Push(child);
+            WriteCreated(node.Id, node.Function, TickerType.TimeTicker, node.CreatedAt, partition, false);
+            if (node.GetChildrenForRead() is { } children) foreach (var child in children) pending.Push(child);
         }
     }
 
@@ -146,7 +151,7 @@ internal sealed class TickerLifecycleLogger(ITickerExecutionLogStore store, Exec
                 Id = eventId ?? CreateEventId(context, kind, status, attempt), TickerId = context.TickerId,
                 UnixMs = new DateTimeOffset(DateTime.SpecifyKind(timestamp ?? clock.UtcNow, DateTimeKind.Utc)).ToUnixTimeMilliseconds(),
                 Level = (int)level, Category = "TickerQ.Scheduler", FunctionName = context.FunctionName ?? "",
-                Message = options.Redact == null ? message : options.Redact(message) ?? "",
+                Message = Redact(message),
                 IsEphemeral = context.IsTestRun,
                 LifecycleEvent = kind, Status = status, Attempt = kind == TickerLifecycleEvent.Created ? 0 : (attempt ?? context.RetryCount) + 1
             });
@@ -154,11 +159,33 @@ internal sealed class TickerLifecycleLogger(ITickerExecutionLogStore store, Exec
         catch { /* Diagnostic capture must never change an execution outcome. */ }
     }
 
+    // Write for the Created event straight from the ticker's values: the same line, event id and
+    // level as Write builds, without allocating an execution context for a job that has not run.
+    private void WriteCreated(Guid id, string function, TickerType type, DateTime createdAt, string partition,
+        bool isEphemeral)
+    {
+        try
+        {
+            store.Add(new TickerExecutionLogLine
+            {
+                Id = CreateCreatedEventId(partition, type, id), TickerId = id,
+                UnixMs = new DateTimeOffset(DateTime.SpecifyKind(createdAt, DateTimeKind.Utc)).ToUnixTimeMilliseconds(),
+                Level = (int)LevelFor(TickerLifecycleEvent.Created, TickerStatus.Idle), Category = "TickerQ.Scheduler",
+                FunctionName = function ?? "",
+                Message = Redact(type == TickerType.CronTickerOccurrence ? "Cron occurrence created." : "Job created."),
+                IsEphemeral = isEphemeral,
+                LifecycleEvent = TickerLifecycleEvent.Created, Status = TickerStatus.Idle, Attempt = 0
+            });
+        }
+        catch { /* Diagnostic capture must never change an execution outcome. */ }
+    }
+
+    private string Redact(string message) => options.Redact == null ? message : options.Redact(message) ?? "";
+
     private static Guid CreateEventId(InternalFunctionContext context, TickerLifecycleEvent kind,
         TickerStatus status, int? attempt)
     {
         char[] rentedChars = null;
-        byte[] rentedBytes = null;
         Span<char> identity = stackalloc char[512];
         try
         {
@@ -166,25 +193,58 @@ internal sealed class TickerLifecycleLogger(ITickerExecutionLogStore store, Exec
             // unknown enum values, and empty nullable GUID fields. Do not materialize that text.
             int length;
             while (!TryFormatIdentity(identity, context, kind, status, attempt, out length))
-            {
-                var replacement = ArrayPool<char>.Shared.Rent(checked(identity.Length * 2));
-                if (rentedChars != null) ArrayPool<char>.Shared.Return(rentedChars, clearArray: true);
-                rentedChars = replacement;
-                identity = rentedChars;
-            }
+                identity = Grow(identity, ref rentedChars);
+            return HashIdentity(identity[..length]);
+        }
+        finally
+        {
+            if (rentedChars != null) ArrayPool<char>.Shared.Return(rentedChars, clearArray: true);
+        }
+    }
 
-            var byteCount = Encoding.UTF8.GetByteCount(identity[..length]);
+    // The Created identity TryFormatIdentity writes, from the values rather than a context.
+    private static Guid CreateCreatedEventId(string partition, TickerType type, Guid tickerId)
+    {
+        char[] rentedChars = null;
+        Span<char> identity = stackalloc char[512];
+        try
+        {
+            int length;
+            while (!identity.TryWrite(
+                       $"{partition}|{type}|{tickerId}|{TickerLifecycleEvent.Created}|{TickerStatus.Idle}|", out length))
+                identity = Grow(identity, ref rentedChars);
+            return HashIdentity(identity[..length]);
+        }
+        finally
+        {
+            if (rentedChars != null) ArrayPool<char>.Shared.Return(rentedChars, clearArray: true);
+        }
+    }
+
+    private static Span<char> Grow(Span<char> identity, ref char[] rentedChars)
+    {
+        var replacement = ArrayPool<char>.Shared.Rent(checked(identity.Length * 2));
+        if (rentedChars != null) ArrayPool<char>.Shared.Return(rentedChars, clearArray: true);
+        rentedChars = replacement;
+        return rentedChars;
+    }
+
+    private static Guid HashIdentity(ReadOnlySpan<char> identity)
+    {
+        byte[] rentedBytes = null;
+        try
+        {
+            var byteCount = Encoding.UTF8.GetByteCount(identity);
             Span<byte> encoded = byteCount <= 1024
                 ? stackalloc byte[byteCount]
                 : (rentedBytes = ArrayPool<byte>.Shared.Rent(byteCount));
-            Encoding.UTF8.GetBytes(identity[..length], encoded);
+            Encoding.UTF8.GetBytes(identity, encoded);
             Span<byte> hash = stackalloc byte[32];
             SHA256.HashData(encoded[..byteCount], hash);
             return new Guid(hash[..16]);
         }
         finally
         {
-            if (rentedChars != null) ArrayPool<char>.Shared.Return(rentedChars, clearArray: true);
             if (rentedBytes != null) ArrayPool<byte>.Shared.Return(rentedBytes, clearArray: true);
         }
     }

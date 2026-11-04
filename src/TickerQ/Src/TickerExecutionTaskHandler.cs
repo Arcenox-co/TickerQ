@@ -419,7 +419,7 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
         // Legacy/direct call (and every child): self-register atomically and own the single cleanup.
         var cancellationTokenSource = TickerCancellationTokenManager.TryRegisterAcquired(
-            context, isDue, out var generationConflict, cancellationToken);
+            context, isDue, cancellationToken, out var generationConflict);
         if (cancellationTokenSource == null)
         {
             if (generationConflict && mode == ExecutionMode.Scheduler)
@@ -768,8 +768,11 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 }
 
                 if (mode == ExecutionMode.Scheduler && _executionScheduler != null)
-                    await _executionScheduler.ExecuteAsync(
-                        InvokeAttemptAsync, context.CachedPriority, cancellationTokenSource.Token).ConfigureAwait(false);
+                    // An acquired root's source is already cancelled on scheduler stop (see
+                    // InternalFunctionContext.SchedulerStopToken); every other execution passes default.
+                    await _executionScheduler.ExecuteStopBoundAsync(
+                        InvokeAttemptAsync, context.CachedPriority, cancellationTokenSource.Token,
+                        context.SchedulerStopToken).ConfigureAwait(false);
                 else
                     await InvokeAttemptAsync(cancellationTokenSource.Token).ConfigureAwait(false);
 
@@ -1112,19 +1115,24 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         }
     }
 
-    private async Task PersistExecutionUpdateAsync(
+    // Not async for the common write: it hands back the store's task, so an execution pays for no
+    // extra state machine. Every caller awaits it directly.
+    private Task PersistExecutionUpdateAsync(
         InternalFunctionContext context,
         TickerFunctionContext executionContext)
     {
         var terminal = context.IsPropertyTracked(nameof(InternalFunctionContext.Status)) &&
                        context.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                            or TickerStatus.Cancelled or TickerStatus.Skipped;
-        if (!executionContext.IsRemoteCallbackExecution || !terminal)
-        {
-            await _store.UpdateTickerAsync(context).ConfigureAwait(false);
-            return;
-        }
+        return !executionContext.IsRemoteCallbackExecution || !terminal
+            ? _store.UpdateTickerAsync(context)
+            : PersistRemoteTerminalUpdateAsync(context, executionContext);
+    }
 
+    private async Task PersistRemoteTerminalUpdateAsync(
+        InternalFunctionContext context,
+        TickerFunctionContext executionContext)
+    {
         var intent = executionContext.RemoteFinalizationIntent;
         if (intent is null)
         {

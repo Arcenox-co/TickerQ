@@ -299,7 +299,8 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
 
     private async ValueTask QueueCoreAsync(Func<CancellationToken, Task> work,
         TickerTaskPriority priority, CancellationToken cancellationToken, long generation,
-        bool acceptedOrchestration = false, WorkItemCompletion completion = null, ExecutionContext executionContext = null)
+        bool acceptedOrchestration = false, WorkItemCompletion completion = null, ExecutionContext executionContext = null,
+        bool tokenObservesStop = false)
     {
         while (true)
         {
@@ -324,7 +325,7 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
                     // Capacity reservation, publication and lifecycle checks are atomic.
                     // Count before signaling, so a consumer cannot observe an unowned item.
                     _totalQueuedTasks++;
-                    _queues[GetPriorityQueue(priority)].Enqueue(new WorkItem(work, cancellationToken, priority, completion, executionContext));
+                    _queues[GetPriorityQueue(priority)].Enqueue(new WorkItem(work, cancellationToken, priority, completion, executionContext, tokenObservesStop));
                     SignalWorkAvailable();
                     return;
                 }
@@ -533,7 +534,11 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
     {
         if (workItem.ExecutionContext != null)
             ExecutionContext.Restore(workItem.ExecutionContext);
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(workItem.UserToken, _stopToken);
+        // The work's token must fire on scheduler stop. A token that already does needs no linked source.
+        using var linked = workItem.TokenObservesStop
+            ? null
+            : CancellationTokenSource.CreateLinkedTokenSource(workItem.UserToken, _stopToken);
+        var workToken = linked?.Token ?? workItem.UserToken;
         var previousScope = _currentExecutionScope.Value;
         var executionScope = new ExecutionScope(this);
         _currentExecutionScope.Value = executionScope;
@@ -542,14 +547,11 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
         {
             if (workItem.Priority == TickerTaskPriority.LongRunning)
             {
-                await Task.Factory.StartNew(
-                    () => workItem.Work(linked.Token) ?? Task.CompletedTask,
-                    CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)
-                    .Unwrap().ConfigureAwait(false);
+                await RunLongRunning(workItem.Work, workToken).ConfigureAwait(false);
             }
             else
             {
-                var task = workItem.Work(linked.Token);
+                var task = workItem.Work(workToken);
                 if (task != null) await task.ConfigureAwait(false);
             }
         }
@@ -572,6 +574,14 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
         else
             workItem.Completion?.CompleteSuccess();
     }
+
+    // Its own method, so the closure exists only for LongRunning work: a lambda in ExecuteWorkAsync
+    // would hoist the captured locals into a closure allocated on every execution.
+    private static Task RunLongRunning(Func<CancellationToken, Task> work, CancellationToken token)
+        => Task.Factory.StartNew(
+                () => work(token) ?? Task.CompletedTask,
+                CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)
+            .Unwrap();
 
     /// <summary>Rejects new work and wakes pending capacity waiters. Accepted work drains.</summary>
     public void Freeze()
@@ -764,8 +774,18 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
         }
     }
 
-    async Task ITickerQExecutionScheduler.ExecuteAsync(Func<CancellationToken, Task> work,
+    Task ITickerQExecutionScheduler.ExecuteAsync(Func<CancellationToken, Task> work,
         TickerTaskPriority priority, CancellationToken token)
+        => ExecuteCoreAsync(work, priority, token, tokenObservesStop: false);
+
+    // Only this scheduler's own stop token proves the caller's token already follows it.
+    Task ITickerQExecutionScheduler.ExecuteStopBoundAsync(Func<CancellationToken, Task> work,
+        TickerTaskPriority priority, CancellationToken token, CancellationToken stopToken)
+        => ExecuteCoreAsync(work, priority, token,
+            tokenObservesStop: token.CanBeCanceled && stopToken.CanBeCanceled && stopToken == _stopToken);
+
+    private async Task ExecuteCoreAsync(Func<CancellationToken, Task> work,
+        TickerTaskPriority priority, CancellationToken token, bool tokenObservesStop)
     {
         if (work == null) throw new ArgumentNullException(nameof(work));
         ExecutionScope owner = null;
@@ -783,8 +803,11 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
         {
             var completion = new WorkItemCompletion();
             using var userRegistration = completion.CancelBeforeStartOn(token);
-            using var stopRegistration = completion.CancelBeforeStartOn(_stopToken);
-            await QueueCoreAsync(work, priority, token, generation, owner != null, completion, ExecutionContext.Capture()).ConfigureAwait(false);
+            // A token that already follows scheduler stop cancels the queued attempt through
+            // userRegistration; registering on the shared stop token too would only duplicate it.
+            using var stopRegistration = tokenObservesStop ? default : completion.CancelBeforeStartOn(_stopToken);
+            await QueueCoreAsync(work, priority, token, generation, owner != null, completion, ExecutionContext.Capture(),
+                tokenObservesStop).ConfigureAwait(false);
             await completion.Task.ConfigureAwait(false);
         }
         finally { owner?.ReleaseNested(); }
