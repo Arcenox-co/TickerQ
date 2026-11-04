@@ -69,7 +69,13 @@ namespace TickerQ.Utilities.Models
         MissingSerializerMetadata = 6,
 
         /// <summary>The registered request contract contains a schema that could not be evaluated.</summary>
-        ContractSchemaInvalid = 7
+        ContractSchemaInvalid = 7,
+
+        /// <summary>
+        /// A payload property matches a request property only when case is ignored. Request property
+        /// names are case-sensitive, so it would bind to nothing and the function would see a default.
+        /// </summary>
+        PropertyNameCaseMismatch = 8
     }
 
     /// <summary>

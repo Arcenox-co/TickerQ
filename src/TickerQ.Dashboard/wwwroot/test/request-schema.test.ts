@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   buildRequestFields,
   classifyField,
+  correctPropertyCasing,
   emptyValueForNode,
   exceedsSchemaRenderDepth,
   formatStructuredValue,
@@ -390,4 +391,78 @@ test("syncStructuredDraft resets when the parent value changes externally", () =
   const next = syncStructuredDraft(draft, { a: 1 }, { a: 2 });
   assert.equal(next.error, null);
   assert.deepEqual(parseStructuredInput(next.text), { status: "valid", value: { a: 2 } });
+});
+
+// ---- property-name casing -------------------------------------------------------
+
+// The shape JsonSchemaEmitter emits: nested objects through $defs, a list, and a dictionary.
+const ORDER_SCHEMA = JSON.stringify({
+  type: "object",
+  properties: {
+    OrderId: { type: "string" },
+    Quantity: { type: "integer" },
+    Customer: { anyOf: [{ $ref: "#/$defs/Customer" }, { type: "null" }] },
+    Lines: { type: "array", items: { $ref: "#/$defs/Line" } },
+    Tags: { type: "object", additionalProperties: { type: "string" } },
+  },
+  $defs: {
+    Customer: { type: "object", properties: { Name: { type: "string" } } },
+    Line: { type: "object", properties: { Sku: { type: "string" } } },
+  },
+});
+
+test("camelCase keys are renamed to the contract's names, nested objects and list items included", () => {
+  const { value, corrections } = correctPropertyCasing(ORDER_SCHEMA, {
+    orderId: "A1",
+    quantity: 2,
+    customer: { name: "Ada" },
+    lines: [{ sku: "x" }, { Sku: "y" }],
+  });
+
+  assert.deepEqual(value, {
+    OrderId: "A1",
+    Quantity: 2,
+    Customer: { Name: "Ada" },
+    Lines: [{ Sku: "x" }, { Sku: "y" }],
+  });
+  assert.deepEqual(corrections.map((c) => `${c.path}:${c.to}`), [
+    "/orderId:OrderId",
+    "/quantity:Quantity",
+    "/customer:Customer",
+    "/Customer/name:Name",
+    "/lines:Lines",
+    "/Lines/0/sku:Sku",
+  ]);
+});
+
+test("a payload that already matches is returned unchanged, with no corrections", () => {
+  const payload = { OrderId: "A1", Lines: [{ Sku: "x" }] };
+
+  const { value, corrections } = correctPropertyCasing(ORDER_SCHEMA, payload);
+
+  assert.equal(value, payload);
+  assert.equal(corrections.length, 0);
+});
+
+test("dictionary keys are data, unknown keys are kept, and an exact name is never overwritten", () => {
+  const { value, corrections } = correctPropertyCasing(ORDER_SCHEMA, {
+    OrderId: "exact",
+    orderid: "duplicate",
+    tags: { priority: "high" },
+    note: "unknown",
+  });
+
+  assert.deepEqual(value, { OrderId: "exact", orderid: "duplicate", Tags: { priority: "high" }, note: "unknown" });
+  assert.deepEqual(corrections.map((c) => c.to), ["Tags"]);
+});
+
+test("two keys that differ only by case rename only the first", () => {
+  const { value } = correctPropertyCasing(ORDER_SCHEMA, { orderid: "first", ORDERID: "second" });
+
+  assert.deepEqual(value, { OrderId: "first", ORDERID: "second" });
+});
+
+test("without a parseable schema nothing is corrected", () => {
+  assert.equal(correctPropertyCasing(null, { orderId: 1 }).corrections.length, 0);
+  assert.equal(correctPropertyCasing("not json", { orderId: 1 }).corrections.length, 0);
 });

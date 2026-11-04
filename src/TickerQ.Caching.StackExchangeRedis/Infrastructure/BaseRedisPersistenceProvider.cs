@@ -836,15 +836,15 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     }
 
     private static bool IsFencedTerminalWrite(InternalFunctionContext context)
-        => context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ReleaseLock)) ||
-           (context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+        => context.IsPropertyTracked(nameof(InternalFunctionContext.ReleaseLock)) ||
+           (context.IsPropertyTracked(nameof(InternalFunctionContext.Status)) &&
             context.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                 or TickerStatus.Cancelled or TickerStatus.Skipped);
 
     private static bool RetainsChainLease(InternalFunctionContext context)
         => context.ParentId == null && context.RetainsChainLease &&
-           !context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ReleaseLock)) &&
-           context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+           !context.IsPropertyTracked(nameof(InternalFunctionContext.ReleaseLock)) &&
+           context.IsPropertyTracked(nameof(InternalFunctionContext.Status)) &&
            ChainDeletionPolicy.IsTerminal(context.Status);
 
     private static readonly RedisValue[] LuaTerminalStatuses =
@@ -854,17 +854,17 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     ];
 
     private static bool IsProgressWrite(InternalFunctionContext context)
-        => context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ProgressPercent));
+        => context.IsPropertyTracked(nameof(InternalFunctionContext.ProgressPercent));
 
     private static bool IsSuccessfulTerminalWrite(InternalFunctionContext context)
-        => context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+        => context.IsPropertyTracked(nameof(InternalFunctionContext.Status)) &&
            context.Status is TickerStatus.Done or TickerStatus.DueDone;
 
     private static (string Action, byte[] Envelope) GetResultMutation(InternalFunctionContext context)
     {
         if (!IsSuccessfulTerminalWrite(context)) return ("none", null);
         var publishes = context.ResultEnvelope != null &&
-            context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope));
+            context.IsPropertyTracked(nameof(InternalFunctionContext.ResultEnvelope));
         return publishes
             ? ("set", RedisResultEnvelopeCodec.Serialize(context.ResultEnvelope))
             : ("clear", null);
@@ -875,9 +875,9 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     {
         EnsureExactTerminalPartition(functionContext);
         if (functionContext == null) throw new ArgumentNullException(nameof(functionContext));
-        if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+        if (!functionContext.IsPropertyTracked(nameof(InternalFunctionContext.Status)) ||
             functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone) ||
-            !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope)))
+            !functionContext.IsPropertyTracked(nameof(InternalFunctionContext.ResultEnvelope)))
             throw new InvalidOperationException(
                 "Atomic result persistence accepts only a successful terminal mutation with an explicit optional result envelope.");
         return await CommitTerminalTickerCoreAsync(
@@ -937,10 +937,10 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         if (functionContext == null)
             throw new ArgumentNullException(nameof(functionContext));
         var successful = IsSuccessfulTerminalWrite(functionContext);
-        if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+        if (!functionContext.IsPropertyTracked(nameof(InternalFunctionContext.Status)) ||
             functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                 or TickerStatus.Cancelled or TickerStatus.Skipped) ||
-            (successful && !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope))))
+            (successful && !functionContext.IsPropertyTracked(nameof(InternalFunctionContext.ResultEnvelope))))
             throw new InvalidOperationException(
                 "Acknowledged persistence accepts only a terminal mutation; success requires an explicit optional result envelope.");
 
@@ -1191,7 +1191,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         Action releaseLock,
         Action<DateTime> setUpdatedAt)
     {
-        var propsToUpdate = context.GetPropsToUpdate();
+        var propsToUpdate = context.TrackedProperties;
 
         if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
             context.Status != TickerStatus.Skipped)
@@ -1234,7 +1234,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             count => ticker.RetryCount = count,
             () => { ticker.LockHolder = null; ticker.LockedAt = null; ticker.LeaseUntil = null; ticker.AcquisitionToken = null; },
             at => ticker.UpdatedAt = at);
-        if (context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ProgressPercent)))
+        if (context.IsPropertyTracked(nameof(InternalFunctionContext.ProgressPercent)))
         {
             ticker.ProgressPercent = context.ProgressPercent;
             ticker.ProgressMessage = context.ProgressMessage;
@@ -1265,7 +1265,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             count => occurrence.RetryCount = count,
             () => { occurrence.LockHolder = null; occurrence.LockedAt = null; occurrence.LeaseUntil = null; occurrence.AcquisitionToken = null; },
             at => occurrence.UpdatedAt = at);
-        if (context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ProgressPercent)))
+        if (context.IsPropertyTracked(nameof(InternalFunctionContext.ProgressPercent)))
         {
             occurrence.ProgressPercent = context.ProgressPercent;
             occurrence.ProgressMessage = context.ProgressMessage;
@@ -1469,6 +1469,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                 foreach (var child in ticker.Children) pending.Push(child);
                 if (ticker.Status is not (TickerStatus.Idle or TickerStatus.Queued)) continue;
                 ticker.Status = TickerStatus.Cancelled;
+                ticker.ExceptionMessage = TickerCancellationReasons.PendingRequest;
                 ticker.UpdatedAt = now;
                 ticker.ExecutedAt = now;
                 ticker.LockHolder = null;

@@ -106,6 +106,41 @@ public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
             : _persistence.GetCronTickerById(id, cancellationToken);
     }
 
+    private Task<TTimeTicker> ReadTimeMetadataAsync(Guid id, CancellationToken cancellationToken)
+        => DashboardTimeSource() is ITickerProjectionQueryable<TTimeTicker> { SupportsProjection: true }
+            ? ChainMetadataQuery().Where(x => x.Id == id).FirstOrDefaultAsync(cancellationToken)
+            : _persistence.GetTimeTickerById(id, cancellationToken);
+
+    /// <summary>A search term that is a whole ticker ID, in any <see cref="Guid"/> format.</summary>
+    private static bool TryParseSearchId(string search, out Guid id) => Guid.TryParse(search.Trim(), out id);
+
+    /// <summary>
+    /// The root of the chain that holds <paramref name="id"/>, or null when no time ticker has that ID.
+    /// Lists show roots only, so a searched chain step is found through its root.
+    /// </summary>
+    private async Task<TTimeTicker> ReadTimeChainRootAsync(Guid id, CancellationToken cancellationToken)
+    {
+        var current = await ReadTimeMetadataAsync(id, cancellationToken).ConfigureAwait(false);
+        // Chains are at most 20 child levels deep; the bound also stops on a corrupt parent cycle.
+        for (var depth = 0; depth < 20 && current?.ParentId is { } parentId; depth++)
+        {
+            var parent = await ReadTimeMetadataAsync(parentId, cancellationToken).ConfigureAwait(false);
+            if (parent == null) break;
+            current = parent;
+        }
+        return current;
+    }
+
+    /// <summary>The cron ticker that owns an occurrence or a cron-generated time ticker with this ID.</summary>
+    private async Task<Guid?> ReadOwningCronIdAsync(Guid id, CancellationToken cancellationToken)
+    {
+        var occurrence = await OccurrenceMetadataQuery().Where(x => x.Id == id)
+            .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (occurrence != null) return occurrence.CronTickerId;
+        var root = await ReadTimeChainRootAsync(id, cancellationToken).ConfigureAwait(false);
+        return root?.OriginCronTickerId;
+    }
+
     private ITickerQueryable<CronTickerOccurrenceEntity<TCronTicker>> OccurrenceMetadataQuery()
         => DashboardMetadataQueryable<CronTickerOccurrenceEntity<TCronTicker>>.Create(
             _persistence.CronTickerOccurrencesQuery(), OccurrenceMetadata);

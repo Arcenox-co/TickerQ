@@ -198,6 +198,7 @@ public abstract class ProviderReliabilityContractTests
         {
             var saved = await Provider.GetTimeTickerById(id);
             Assert.Equal(TickerStatus.Cancelled, saved.Status);
+            Assert.Equal(TickerCancellationReasons.PendingRequest, saved.ExceptionMessage);
             Assert.Equal(Now, saved.ExecutedAt);
             Assert.Null(saved.LockHolder);
             Assert.Null(saved.AcquisitionToken);
@@ -238,6 +239,38 @@ public abstract class ProviderReliabilityContractTests
             [new AcquisitionLease(root.Id, queued.AcquisitionToken)]));
         await Provider.ReleaseAcquiredTimeTickers([root.Id]);
         Assert.Equal(TickerStatus.Cancelled, (await Provider.GetTimeTickerById(root.Id)).Status);
+    }
+
+    [Fact]
+    public async Task Delete_RemovesAQueuedChainThatHasNotStarted_AndItsClaimCannotStartIt()
+    {
+        // The scheduler claims the next due job (Queued plus a generation) before it starts it.
+        var root = NewTimeTicker();
+        root.Children.Add(NewChildDefinition());
+        await Provider.AddTimeTickers([root]);
+        await QueueForOwnership(root.Id);
+        var queued = await Provider.GetTimeTickerById(root.Id);
+        Assert.Equal(TickerStatus.Queued, queued.Status);
+
+        Assert.Equal(2, await Provider.RemoveTimeTickers([root.Id]));
+
+        Assert.Null(await Provider.GetTimeTickerById(root.Id));
+        Assert.Empty(await Provider.TransitionQueuedTimeTickersToInProgressAsync(
+            [new AcquisitionLease(root.Id, queued.AcquisitionToken)]));
+    }
+
+    [Fact]
+    public async Task Delete_KeepsAChainThatHasStarted()
+    {
+        var root = NewTimeTicker();
+        await Provider.AddTimeTickers([root]);
+        await QueueForOwnership(root.Id);
+        var queued = await Provider.GetTimeTickerById(root.Id);
+        Assert.Single(await Provider.TransitionQueuedTimeTickersToInProgressAsync(
+            [new AcquisitionLease(root.Id, queued.AcquisitionToken)]));
+
+        Assert.Equal(0, await Provider.RemoveTimeTickers([root.Id]));
+        Assert.Equal(TickerStatus.InProgress, (await Provider.GetTimeTickerById(root.Id)).Status);
     }
 
     [Fact]

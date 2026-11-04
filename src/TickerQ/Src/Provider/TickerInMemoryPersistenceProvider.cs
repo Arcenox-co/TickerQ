@@ -619,8 +619,8 @@ namespace TickerQ.Provider
         // execution handler only attaches it on success), and this re-check guards against any that slip through.
         private static bool IsSuccessfulResultWrite(InternalFunctionContext functionContext)
             => functionContext.ResultEnvelope != null
-               && functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope))
-               && functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status))
+               && functionContext.IsPropertyTracked(nameof(InternalFunctionContext.ResultEnvelope))
+               && functionContext.IsPropertyTracked(nameof(InternalFunctionContext.Status))
                && functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
 
         public Task<TickerResultEnvelope> GetTimeTickerResultAsync(Guid id, CancellationToken cancellationToken = default)
@@ -651,11 +651,11 @@ namespace TickerQ.Provider
                 throw new ArgumentNullException(nameof(context));
             EnsureExactTerminalPartition(context);
             var successful = context.Status is TickerStatus.Done or TickerStatus.DueDone;
-            if (!context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+            if (!context.IsPropertyTracked(nameof(InternalFunctionContext.Status)) ||
                 context.Status is not (TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                     or TickerStatus.Cancelled or TickerStatus.Skipped) ||
                 (requireSuccessful && !successful) ||
-                (successful && !context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope))))
+                (successful && !context.IsPropertyTracked(nameof(InternalFunctionContext.ResultEnvelope))))
                 throw new InvalidOperationException(
                     "Acknowledged persistence accepts only a terminal mutation; success requires an explicit optional result envelope.");
         }
@@ -772,6 +772,21 @@ namespace TickerQ.Provider
                         if (TryUpdateTimeTicker(timeTicker.Id, updatedTicker, existingTicker))
                         {
                             ClearDescendantProgress(timeTicker.Id);
+                            if (SharesQueueProjection(updatedTicker) is { } shared)
+                            {
+                                // The queued row reads exactly as its projection would: hand it out
+                                // instead of copying it, and never touch the caller's input.
+                                AfterAcquisitionMutationForTest?.Invoke(timeTicker.Id);
+                                yield return shared;
+                                continue;
+                            }
+                            if (ReferenceEquals(timeTicker, existingTicker))
+                            {
+                                // A shared input that stopped qualifying is a published row: never mutate it.
+                                AfterAcquisitionMutationForTest?.Invoke(timeTicker.Id);
+                                yield return ForQueueTimeTickers(updatedTicker);
+                                continue;
+                            }
                             timeTicker.UpdatedAt = now;
                             timeTicker.LockHolder = _lockHolder;
                             timeTicker.LockedAt = now;
@@ -914,6 +929,13 @@ namespace TickerQ.Provider
                 for (var i = result.Length - 1; i >= 0; i--)
                 {
                     candidates.TryDequeue(out var ticker, out var priority);
+                    if (SharesQueueProjection(ticker) is { } shared)
+                    {
+                        // Published rows are never mutated, and the acquisition path only reads
+                        // these; QueueTimeTickers below never writes into a shared input.
+                        result[i] = shared;
+                        continue;
+                    }
                     result[i] = ForQueueTimeTickers(ticker);
                     result[i].ExecutionTime = priority.ExecutionTime;
                 }
@@ -943,6 +965,7 @@ namespace TickerQ.Provider
                     if (current.Status is not (TickerStatus.Idle or TickerStatus.Queued)) continue;
                     var updated = CloneTicker(current);
                     updated.Status = TickerStatus.Cancelled;
+                    updated.ExceptionMessage = TickerCancellationReasons.PendingRequest;
                     updated.UpdatedAt = _clock.UtcNow;
                     updated.ExecutedAt = updated.UpdatedAt;
                     updated.LockHolder = null;
@@ -1048,7 +1071,9 @@ namespace TickerQ.Provider
                 changedTicker.ProgressMessage = update.Message;
                 changedTicker.ProgressUpdatedAt = update.UpdatedAtUtc;
                 changedTicker.UpdatedAt = update.UpdatedAtUtc;
-                return TimeTickers.TryUpdate(update.TickerId, changedTicker, ticker);
+                // Through the shared CAS so the legacy-adoption fence applies, as for every row write.
+                // Progress belongs to a running job and needs no runnable admission.
+                return TryUpdateTimeTicker(update.TickerId, changedTicker, ticker, requireRunnableActivation: false);
             }));
         }
 
@@ -1101,8 +1126,10 @@ namespace TickerQ.Provider
             {
                 var winners = new List<Guid>(leases.Count);
                 var now = _clock.UtcNow;
-                foreach (var lease in leases.Where(x => x.AcquisitionToken.HasValue).Distinct())
+                // No Distinct(): a repeated lease finds its row already InProgress and is not a winner twice.
+                foreach (var lease in leases)
                 {
+                    if (!lease.AcquisitionToken.HasValue) continue;
                     while (TimeTickers.TryGetValue(lease.TickerId, out var current))
                     {
                         cancellationToken.ThrowIfCancellationRequested();
@@ -1504,9 +1531,7 @@ namespace TickerQ.Provider
                     CollectTimeTickerSubtree(id, aggregate, new HashSet<Guid>());
                     if (ChainDeletionPolicy.BlocksDeletion(requestedRoot.DeleteBehavior,
                             aggregate.Where(x => x.Id != id).Select(x => x.Status))) continue;
-                    if (aggregate.Any(x => x.Status == TickerStatus.InProgress ||
-                                           x.AcquisitionToken.HasValue ||
-                                           x.LeaseUntil is { } leaseUntil && leaseUntil > now))
+                    if (aggregate.Any(x => ChainDeletionPolicy.IsStarted(x.Status, x.AcquisitionToken, x.LeaseUntil, now)))
                         continue;
 
                     foreach (var snapshot in aggregate.AsEnumerable().Reverse())
@@ -1681,6 +1706,8 @@ namespace TickerQ.Provider
         // and zero-cost in production.
         internal static Action GraphReplacementMidpointHook;
 
+        public bool SupportsTimeTickerChainReplacement => true;
+
         public Task<int> ReplaceTimeTickerChainAsync(Guid oldRootId, TTimeTicker newRoot, CancellationToken cancellationToken = default)
         {
             if (newRoot == null)
@@ -1697,9 +1724,7 @@ namespace TickerQ.Provider
                 if (ChainDeletionPolicy.BlocksDeletion(oldRoot.DeleteBehavior,
                         oldAggregate.Where(x => x.Id != oldRootId).Select(x => x.Status))) return Task.FromResult(0);
                 var now = _clock.UtcNow;
-                if (oldAggregate.Any(x => x.Status == TickerStatus.InProgress ||
-                                          x.AcquisitionToken.HasValue ||
-                                          (x.LeaseUntil.HasValue && x.LeaseUntil > now)))
+                if (oldAggregate.Any(x => ChainDeletionPolicy.IsStarted(x.Status, x.AcquisitionToken, x.LeaseUntil, now)))
                     return Task.FromResult(0);
 
                 // Persist the COMPLETE replacement first. Fail closed on any id collision
@@ -3059,6 +3084,19 @@ namespace TickerQ.Provider
         // Matches EF Core's MappingExtensions.ForQueueTimeTickers but uses an in-memory
         // children index. Walks the chain iteratively to unbounded depth (matching the
         // probe-and-extend behavior in the EF provider) so deep chains aren't truncated.
+        /// <summary>
+        /// The stored row itself when execution reads it exactly as it would read the
+        /// <see cref="ForQueueTimeTickers"/> projection — a plain standalone job with no chain-retry point
+        /// and no run condition (the root projection omits it) — else null. Saves an entity copy per job.
+        /// </summary>
+        private TimeTickerEntity SharesQueueProjection(TTimeTicker ticker)
+            => ticker is TimeTickerEntity plain && plain.GetType() == typeof(TimeTickerEntity) &&
+               plain.ChainRetryFromId == null && plain.RunCondition == null &&
+               plain.ChainRootId == plain.Id && plain.GetChildrenForRead() is not { Count: > 0 } &&
+               !ChildrenIndex.ContainsKey(plain.Id)
+                ? plain
+                : null;
+
         private TimeTickerEntity ForQueueTimeTickers(TTimeTicker ticker)
         {
             var root = new TimeTickerEntity
@@ -3074,9 +3112,25 @@ namespace TickerQ.Provider
                 ParentId = ticker.ParentId,
                 DeleteBehavior = ticker.DeleteBehavior,
                 ExecutionTime = ticker.ExecutionTime,
+                // The rest matches the EF Core queue projection: execution reads the missed-run
+                // policy and the chain-retry point from it, and the runtime state as acquired.
+                Status = ticker.Status,
+                LockHolder = ticker.LockHolder,
+                LockedAt = ticker.LockedAt,
+                LeaseUntil = ticker.LeaseUntil,
                 AcquisitionToken = ticker.AcquisitionToken,
                 ChainRootId = ticker.Id,
                 ChainGeneration = ticker.ChainGeneration,
+                ChainRetryFromId = ticker.ChainRetryFromId,
+                ChainRetryPreviousStatus = ticker.ChainRetryPreviousStatus,
+                RetryCount = ticker.RetryCount,
+                ExceptionMessage = ticker.ExceptionMessage,
+                SkippedReason = ticker.SkippedReason,
+                StaleRestartCount = ticker.StaleRestartCount,
+                ExecutedAt = ticker.ExecutedAt,
+                ElapsedTime = ticker.ElapsedTime,
+                MissedExecutionAction = ticker.MissedExecutionAction,
+                MaximumLateness = ticker.MaximumLateness,
                 OriginCronTickerId = ticker.OriginCronTickerId,
             };
 
@@ -3112,6 +3166,9 @@ namespace TickerQ.Provider
                         TimeoutSeconds = ch.TimeoutSeconds,
                         RunCondition = ch.RunCondition,
                         ParentId = ch.ParentId,
+                        DeleteBehavior = ch.DeleteBehavior,
+                        // A chain retry reads each step's recorded status, as from EF Core.
+                        Status = ch.Status,
                         ChainRootId = chainRootId,
                         ChainGeneration = chainGeneration,
                     };
@@ -3151,8 +3208,8 @@ namespace TickerQ.Provider
         }
 
         private static bool IsFencedTerminalWrite(InternalFunctionContext functionContext)
-            => functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ReleaseLock)) ||
-               (functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+            => functionContext.IsPropertyTracked(nameof(InternalFunctionContext.ReleaseLock)) ||
+               (functionContext.IsPropertyTracked(nameof(InternalFunctionContext.Status)) &&
                 functionContext.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                     or TickerStatus.Cancelled or TickerStatus.Skipped);
 
@@ -3171,6 +3228,9 @@ namespace TickerQ.Provider
             return ((occurrence.Status == TickerStatus.Idle || occurrence.Status == TickerStatus.Queued) && occurrence.LockHolder == _lockHolder) ||
                    ((occurrence.Status == TickerStatus.Idle || occurrence.Status == TickerStatus.Queued) && occurrence.LockedAt == null);
         }
+
+        private static bool HasProgress(TTimeTicker ticker)
+            => ticker.ProgressPercent != null || ticker.ProgressMessage != null || ticker.ProgressUpdatedAt != null;
 
         private static void ClearProgress(TTimeTicker ticker)
         {
@@ -3195,8 +3255,16 @@ namespace TickerQ.Provider
                 if (!ChildrenIndex.TryGetValue(parentId, out var children)) continue;
                 foreach (var childId in children.Keys)
                 {
-                    if (TimeTickers.TryGetValue(childId, out var child))
-                        ClearProgress(child);
+                    // Published rows are immutable: replace the child rather than clearing it in
+                    // place, which a concurrent reader (some callers hold no graph lock) could observe.
+                    while (TimeTickers.TryGetValue(childId, out var child) && HasProgress(child))
+                    {
+                        var cleared = CloneTicker(child);
+                        ClearProgress(cleared);
+                        if (TryUpdateTimeTicker(childId, cleared, child, requireRunnableActivation: false)) break;
+                        // Retry only a lost race; any other refusal leaves the row as it is.
+                        if (TimeTickers.TryGetValue(childId, out var current) && ReferenceEquals(current, child)) break;
+                    }
                     pending.Push(childId);
                 }
             }
@@ -3214,6 +3282,7 @@ namespace TickerQ.Provider
 
         private TTimeTicker CloneTicker(TTimeTicker ticker)
         {
+
             var cloned = new TTimeTicker
             {
                 Id = ticker.Id,
@@ -3298,7 +3367,7 @@ namespace TickerQ.Provider
 
         private void ApplyFunctionContextToTicker(TTimeTicker ticker, InternalFunctionContext context)
         {
-            var propsToUpdate = context.GetPropsToUpdate();
+            var propsToUpdate = context.TrackedProperties;
 
             // STATUS / SKIPPED
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
@@ -3377,7 +3446,7 @@ namespace TickerQ.Provider
         
         private void ApplyFunctionContextToCronOccurrence(CronTickerOccurrenceEntity<TCronTicker> occurrence, InternalFunctionContext context)
         {
-            var propsToUpdate = context.GetPropsToUpdate();
+            var propsToUpdate = context.TrackedProperties;
 
             // STATUS / SKIPPED
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&

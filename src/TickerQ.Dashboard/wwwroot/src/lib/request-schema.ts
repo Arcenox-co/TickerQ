@@ -514,3 +514,81 @@ export function syncStructuredDraft(
   if (sameJsonValue(previousValue, nextValue)) return draft;
   return initStructuredDraft(nextValue);
 }
+
+// ---- property-name casing ------------------------------------------------------
+//
+// The server binds request properties by exact, case-sensitive name and rejects one that
+// matches only when case is ignored (it would otherwise bind to nothing). Raw JSON typed or
+// pasted into the editor is corrected to the contract's names instead, before it is sent.
+
+/** One property renamed to the contract's exact spelling, at a JSON-pointer-style path. */
+export interface CasingCorrection {
+  path: string;
+  from: string;
+  to: string;
+}
+
+const MAX_CASING_DEPTH = 32;
+
+/**
+ * Rename every object key that matches exactly one contract property only when case is
+ * ignored, provided that exact name is not already present. Nested objects and array items
+ * are corrected too; dictionary keys are data and are left alone. Returns the input itself
+ * when nothing changed, so callers can tell a correction from a no-op.
+ */
+export function correctPropertyCasing(
+  schemaJson: string | null | undefined,
+  value: unknown,
+): { value: unknown; corrections: CasingCorrection[] } {
+  const corrections: CasingCorrection[] = [];
+  if (!schemaJson) return { value, corrections };
+  let root: unknown;
+  try {
+    root = JSON.parse(schemaJson);
+  } catch {
+    return { value, corrections };
+  }
+  const corrected = correctNode(root, root, value, "", 0, corrections);
+  return { value: corrections.length > 0 ? corrected : value, corrections };
+}
+
+function correctNode(
+  root: unknown,
+  schema: unknown,
+  value: unknown,
+  path: string,
+  depth: number,
+  corrections: CasingCorrection[],
+): unknown {
+  if (depth > MAX_CASING_DEPTH) return value;
+  const resolved = resolveSchemaNode(root, schema);
+
+  if (resolved.kind === "array" && resolved.items && Array.isArray(value)) {
+    return value.map((item, index) =>
+      correctNode(root, resolved.items, item, `${path}/${index}`, depth + 1, corrections));
+  }
+  if (resolved.kind === "dictionary" && resolved.values && isObject(value)) {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) =>
+      [key, correctNode(root, resolved.values, entry, `${path}/${key}`, depth + 1, corrections)]));
+  }
+  if (resolved.kind !== "object" || !isObject(value)) return value;
+
+  const byName = new Map(resolved.properties.map((property) => [property.name, property]));
+  const corrected: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    let name = key;
+    if (!byName.has(key)) {
+      const candidates = resolved.properties.filter(
+        (property) => property.name.toLowerCase() === key.toLowerCase());
+      if (candidates.length === 1 && !(candidates[0].name in value) && !(candidates[0].name in corrected)) {
+        name = candidates[0].name;
+        corrections.push({ path: `${path}/${key}`, from: key, to: name });
+      }
+    }
+    const property = byName.get(name);
+    corrected[name] = property
+      ? correctNode(root, property.schema, entry, `${path}/${name}`, depth + 1, corrections)
+      : entry;
+  }
+  return corrected;
+}

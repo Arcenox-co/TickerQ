@@ -83,6 +83,10 @@ namespace TickerQ.Utilities.Infrastructure
     internal sealed class InMemoryTickerExecutionLogStore : ITickerExecutionLogStore
     {
         private readonly Dictionary<Guid, Buffer> _buffers = new();
+        // Buffers in last-written order (head = least recent), guarded by _gate. Every write bumps a
+        // buffer's Version to "now or later", so the head is the minimum Version that eviction wants,
+        // found in O(1) instead of a scan of every buffer under the lock.
+        private Buffer _oldest, _newest;
         private readonly object _gate = new();
         private readonly ExecutionLogOptions _options;
         private int _bytes;
@@ -114,10 +118,11 @@ namespace TickerQ.Utilities.Infrastructure
                 if (!_buffers.TryGetValue(line.TickerId, out var buffer))
                 {
                     while (_buffers.Count >= _options.MaxBufferedExecutions) EvictOldest();
-                    _buffers[line.TickerId] = buffer = new Buffer();
+                    _buffers[line.TickerId] = buffer = new Buffer { Id = line.TickerId };
+                    LinkNewest(buffer);
                 }
                 buffer.IsEphemeral |= line.IsEphemeral;
-                if (line.LifecycleEvent != TickerLifecycleEvent.None && buffer.Lines.Any(x => x.Line.Id == line.Id)) return;
+                if (line.LifecycleEvent != TickerLifecycleEvent.None && ContainsLine(buffer, line.Id)) return;
                 buffer.Lines.Enqueue((line, size));
                 buffer.Bytes += size; _bytes += size;
                 buffer.Truncated |= line.Truncated;
@@ -128,6 +133,8 @@ namespace TickerQ.Utilities.Infrastructure
                     buffer.Truncated = true;
                 }
                 buffer.Version = Math.Max(DateTime.UtcNow.Ticks, buffer.Version + 1);
+                Unlink(buffer);
+                LinkNewest(buffer);
                 while (_bytes > _options.MaxBufferedBytes) EvictOldest();
             }
         }
@@ -169,21 +176,44 @@ namespace TickerQ.Utilities.Infrastructure
         private static ExecutionLogSnapshot Copy(Guid id, Buffer b) => new(id, b.Version,
             b.Lines.Select(x => x.Line).ToArray(), b.Truncated);
 
+        // Runs on every appended line; the closure lives in PruneExpiredLocked so the common
+        // early return allocates nothing.
         private void PruneLocked(long now)
         {
             if (now < _nextPrune) return;
             _nextPrune = now + Math.Min(_options.MemoryRetention.Ticks, TimeSpan.TicksPerMinute);
+            PruneExpiredLocked(now);
+        }
+
+        private void PruneExpiredLocked(long now)
+        {
             foreach (var id in _buffers.Where(x => now - x.Value.Version > _options.MemoryRetention.Ticks).Select(x => x.Key).ToArray())
                 Remove(id);
         }
 
-        private void EvictOldest() { Remove(_buffers.MinBy(x => x.Value.Version).Key); Interlocked.Increment(ref _evicted); }
+        private void EvictOldest() { Remove(_oldest.Id); Interlocked.Increment(ref _evicted); }
+
+        private void LinkNewest(Buffer buffer)
+        {
+            buffer.Previous = _newest;
+            buffer.Next = null;
+            if (_newest != null) _newest.Next = buffer; else _oldest = buffer;
+            _newest = buffer;
+        }
+
+        private void Unlink(Buffer buffer)
+        {
+            if (buffer.Previous != null) buffer.Previous.Next = buffer.Next; else _oldest = buffer.Next;
+            if (buffer.Next != null) buffer.Next.Previous = buffer.Previous; else _newest = buffer.Previous;
+            buffer.Previous = buffer.Next = null;
+        }
         private void Remove(Guid id)
         {
             var buffer = _buffers[id];
             if (!buffer.IsEphemeral && _options.PersistToDatabase && buffer.Version > buffer.PersistedVersion)
                 _droppedUnflushed++;
             _bytes -= buffer.Bytes;
+            Unlink(buffer);
             _buffers.Remove(id);
         }
 
@@ -197,8 +227,18 @@ namespace TickerQ.Utilities.Infrastructure
             return Encoding.UTF8.GetString(bytes, 0, used) + "…";
         }
 
+        // Queue<T>'s struct enumerator: no closure or boxed enumerator per appended line.
+        private static bool ContainsLine(Buffer buffer, Guid id)
+        {
+            foreach (var entry in buffer.Lines)
+                if (entry.Line.Id == id) return true;
+            return false;
+        }
+
         private sealed class Buffer
         {
+            public Guid Id;
+            public Buffer Previous, Next;
             public readonly Queue<(TickerExecutionLogLine Line, int Size)> Lines = new();
             public int Bytes;
             public long Version;

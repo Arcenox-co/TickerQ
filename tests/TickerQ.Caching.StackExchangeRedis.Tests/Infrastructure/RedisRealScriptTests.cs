@@ -167,6 +167,78 @@ public sealed partial class RedisRealScriptTests
     }
 
     [Fact]
+    public async Task ReplaceChain_PendingChain_PublishesTheNewTreeAndRemovesTheOriginal()
+    {
+        var original = NewIdleTicker();
+        var originalChild = NewIdleTicker();
+        originalChild.ExecutionTime = null;
+        original.Children.Add(originalChild);
+        await _provider.AddTimeTickers([original]);
+        var replacement = NewIdleTicker();
+        replacement.ExecutionTime = BaseNow.AddHours(2);
+        foreach (var function in new[] { "First", "Second" })
+        {
+            var child = NewIdleTicker();
+            child.ExecutionTime = null;
+            child.Function = function;
+            replacement.Children.Add(child);
+        }
+
+        Assert.Equal(3, await _provider.ReplaceTimeTickerChainAsync(original.Id, replacement));
+
+        Assert.Null(await _provider.GetTimeTickerById(original.Id));
+        Assert.Null(await _provider.GetTimeTickerById(originalChild.Id));
+        var saved = await _provider.GetTimeTickerById(replacement.Id);
+        Assert.Equal(TickerStatus.Idle, saved.Status);
+        Assert.Equal(["First", "Second"], saved.Children.Select(x => x.Function).Order());
+        Assert.All(saved.Children, child => Assert.Equal(replacement.Id, child.ParentId));
+        Assert.Null(await _db.SortedSetScoreAsync(_provider.RuntimeKeysForTest.TimeTickerPending, original.Id.ToString()));
+        Assert.NotNull(await _db.SortedSetScoreAsync(_provider.RuntimeKeysForTest.TimeTickerPending, replacement.Id.ToString()));
+        Assert.Contains(await _provider.GetEarliestTimeTickers(), x => x.Id == replacement.Id);
+    }
+
+    [Fact]
+    public async Task ReplaceChain_StartedChain_KeepsTheOriginal_AndWritesNothing()
+    {
+        var original = NewIdleTicker();
+        await _provider.AddTimeTickers([original]);
+        var stored = await _provider.GetTimeTickerById(original.Id);
+        TimeTickerEntity? queued = null;
+        await foreach (var row in _provider.QueueTimeTickers([new TimeTickerEntity { Id = original.Id, UpdatedAt = stored.UpdatedAt }]))
+            queued = row;
+        Assert.Single(await _provider.TransitionQueuedTimeTickersToInProgressAsync(
+            [new AcquisitionLease(original.Id, queued!.AcquisitionToken)]));
+        var replacement = NewIdleTicker();
+
+        Assert.Equal(0, await _provider.ReplaceTimeTickerChainAsync(original.Id, replacement));
+
+        Assert.Equal(TickerStatus.InProgress, (await _provider.GetTimeTickerById(original.Id)).Status);
+        Assert.Null(await _provider.GetTimeTickerById(replacement.Id));
+    }
+
+    [Fact]
+    public async Task Delete_QueuedChainNotYetStarted_RemovesIt_AndFencesItsClaim()
+    {
+        var root = NewIdleTicker();
+        var child = NewIdleTicker();
+        child.ExecutionTime = null;
+        root.Children.Add(child);
+        await _provider.AddTimeTickers([root]);
+        var stored = await _provider.GetTimeTickerById(root.Id);
+        TimeTickerEntity? queued = null;
+        await foreach (var row in _provider.QueueTimeTickers([new TimeTickerEntity { Id = root.Id, UpdatedAt = stored.UpdatedAt }]))
+            queued = row;
+        Assert.NotNull(queued);
+
+        Assert.Equal(1, await _provider.RemoveTimeTickers([root.Id], CancellationToken.None));
+
+        Assert.Null(await _provider.GetTimeTickerById(root.Id));
+        Assert.Empty(await _provider.TransitionQueuedTimeTickersToInProgressAsync(
+            [new AcquisitionLease(root.Id, queued!.AcquisitionToken)]));
+        Assert.Null(await _db.SortedSetScoreAsync(_provider.RuntimeKeysForTest.TimeTickerPending, root.Id.ToString()));
+    }
+
+    [Fact]
     public async Task CancelPending_QueuedChain_CancelsNestedChildren_AndFencesSnapshot()
     {
         var root = NewIdleTicker();

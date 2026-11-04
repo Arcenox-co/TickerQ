@@ -10,8 +10,16 @@ internal static class TimeTickerContextBuilder
 {
     internal static InternalFunctionContext Build(TimeTickerEntity root,
         Func<TimeTickerEntity, InternalFunctionContext> createContext)
+        => Build(root, createContext, static (node, create) => create(node));
+
+    /// <summary>
+    /// As <see cref="Build(TimeTickerEntity, Func{TimeTickerEntity, InternalFunctionContext})"/>, with the
+    /// factory's state passed in so a static lambda needs no per-call closure.
+    /// </summary>
+    internal static InternalFunctionContext Build<TState>(TimeTickerEntity root, TState state,
+        Func<TimeTickerEntity, TState, InternalFunctionContext> createContext)
     {
-        var result = createContext(root);
+        var result = createContext(root, state);
         var rootChildren = root.GetChildrenForRead();
         PrepareChildren(result, rootChildren?.Count ?? 0);
         if (rootChildren is not { Count: > 0 })
@@ -25,7 +33,7 @@ internal static class TimeTickerContextBuilder
             if (children == null) continue;
             foreach (var child in children)
             {
-                var context = createContext(child);
+                var context = createContext(child, state);
                 var descendants = child.GetChildrenForRead();
                 PrepareChildren(context, descendants?.Count ?? 0);
                 current.Context.TimeTickerChildren.Add(context);

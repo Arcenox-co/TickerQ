@@ -339,9 +339,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 if (ChainDeletionPolicy.BlocksDeletion(root.DeleteBehavior,
                         snapshots.Values.Where(x => x.Id != root.Id).Select(x => x.Status))) continue;
 
-                if (snapshots.Values.Any(x => x.Status == TickerStatus.InProgress ||
-                                              x.AcquisitionToken.HasValue ||
-                                              x.LeaseUntil > now))
+                if (snapshots.Values.Any(x => ChainDeletionPolicy.IsStarted(x.Status, x.AcquisitionToken, x.LeaseUntil, now)))
                     continue;
 
                 await OnExplicitTimeTickerDeleteDiscoveredForTestAsync(
@@ -357,7 +355,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                              x.ParentId == snapshot.ParentId && x.Status == snapshot.Status && x.DeleteBehavior == snapshot.DeleteBehavior &&
                              x.AcquisitionToken == snapshot.AcquisitionToken &&
                              x.LeaseUntil == snapshot.LeaseUntil && x.UpdatedAt == snapshot.UpdatedAt &&
-                             x.Status != TickerStatus.InProgress && x.AcquisitionToken == null &&
+                             x.Status != TickerStatus.InProgress &&
+                             (x.AcquisitionToken == null || x.Status == TickerStatus.Queued) &&
                              (!x.LeaseUntil.HasValue || x.LeaseUntil <= now), cancellationToken)
                         .ConfigureAwait(false);
                 }
@@ -391,6 +390,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             CancellationToken cancellationToken)
             => Task.CompletedTask;
 
+        public bool SupportsTimeTickerChainReplacement => true;
+
         public async Task<int> ReplaceTimeTickerChainAsync(Guid oldRootId, TTimeTicker newRoot, CancellationToken cancellationToken = default)
         {
             if (newRoot == null)
@@ -413,9 +414,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     if (oldRoot == null || oldRoot.ParentId.HasValue) return 0;
                     if (ChainDeletionPolicy.BlocksDeletion(oldRoot.DeleteBehavior,
                             oldAggregate.Where(x => x.Id != oldRootId).Select(x => x.Status))) return 0;
-                    if (oldAggregate.Any(x => x.Status == TickerStatus.InProgress ||
-                                              x.AcquisitionToken.HasValue ||
-                                              (x.LeaseUntil.HasValue && x.LeaseUntil > now)))
+                    if (oldAggregate.Any(x => ChainDeletionPolicy.IsStarted(x.Status, x.AcquisitionToken, x.LeaseUntil, now)))
                         return 0;
 
                     // AddAsync walks the Children navigation and cascade-inserts the whole tree.

@@ -1573,6 +1573,53 @@ public class TickerExecutionTaskHandlerTests : IDisposable
 
     #region Helpers
 
+    [Fact]
+    public async Task Outcome_writes_never_exceed_MaxConcurrency_even_when_more_executions_finish_together()
+    {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var inFlight = 0;
+        var peak = 0;
+        var written = 0;
+        var manager = Substitute.For<IInternalTickerManager>();
+        manager.UpdateTickerAsync(Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>())
+            .Returns(async _ =>
+            {
+                var now = Interlocked.Increment(ref inFlight);
+                InterlockedMax(ref peak, now);
+                try { await release.Task; }
+                finally
+                {
+                    Interlocked.Decrement(ref inFlight);
+                    Interlocked.Increment(ref written);
+                }
+            });
+        var handler = new TickerExecutionTaskHandler(_serviceProvider, _clock, _instrumentation, manager,
+            new SchedulerOptionsBuilder { MaxConcurrency = 2 }, Substitute.For<ITickerQFailureNotifier>(),
+            LicenseTestState.Active(_clock), new TickerFunctionConcurrencyGate());
+
+        var executions = Enumerable.Range(0, 8)
+            .Select(_ => CreateContext((_, _, _) => Task.CompletedTask, TickerType.TimeTicker))
+            .Select(context => Task.Run(() => handler.ExecuteTaskAsync(context, false)))
+            .ToArray();
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (Volatile.Read(ref inFlight) < 2 && DateTime.UtcNow < deadline) await Task.Delay(10);
+        await Task.Delay(200); // every other execution has finished its function and waits to write
+        Assert.Equal(2, Volatile.Read(ref inFlight));
+
+        release.SetResult();
+        await Task.WhenAll(executions).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(2, peak);
+        Assert.Equal(8, written);
+
+        static void InterlockedMax(ref int target, int value)
+        {
+            int current;
+            while ((current = Volatile.Read(ref target)) < value &&
+                   Interlocked.CompareExchange(ref target, value, current) != current) { }
+        }
+    }
+
     private static InternalFunctionContext CreateContext(
         TickerFunctionDelegate? ct = null,
         TickerType type = TickerType.CronTickerOccurrence)

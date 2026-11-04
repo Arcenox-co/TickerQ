@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
@@ -91,9 +92,12 @@ public class TickerRequestPayloadValidatorTests : IDisposable
     }
 
     private static void RegisterTyped(string functionName, bool required, string schemaJson, bool withRuntime = true)
+        => RegisterTyped(functionName, required, schemaJson, withRuntime ? ValidatorTestJsonContext.Default.OrderRequest : null);
+
+    private static void RegisterTyped(string functionName, bool required, string schemaJson, JsonTypeInfo typeInfo)
     {
         var contract = new TickerRequestContract(
-            typeof(OrderRequest).FullName!,
+            (typeInfo?.Type ?? typeof(OrderRequest)).FullName!,
             TickerRequestContractConstants.DefaultMediaType,
             required,
             TickerRequestContractConstants.SchemaDialect2020_12,
@@ -102,12 +106,9 @@ public class TickerRequestPayloadValidatorTests : IDisposable
         TickerFunctionProvider.RegisterDescriptors(
             new Dictionary<string, TickerFunctionDescriptor> { [functionName] = descriptor });
 
-        if (withRuntime)
+        if (typeInfo != null)
             TickerFunctionProvider.RegisterRequestTypeInfo(
-                new Dictionary<string, (Type, JsonTypeInfo)>
-                {
-                    [functionName] = (typeof(OrderRequest), ValidatorTestJsonContext.Default.OrderRequest)
-                });
+                new Dictionary<string, (Type, JsonTypeInfo)> { [functionName] = (typeInfo.Type, typeInfo) });
 
         TickerFunctionProvider.Build();
     }
@@ -121,6 +122,51 @@ public class TickerRequestPayloadValidatorTests : IDisposable
     }
 
     private static byte[] Utf8(string json) => Encoding.UTF8.GetBytes(json);
+
+    // ---------------------------------------------------------------
+    // Property names are case-sensitive
+    // ---------------------------------------------------------------
+
+    // What a schema generated from a plain class allows: any properties, none required.
+    private const string PermissiveSchema = "{\"type\":\"object\"}";
+
+    [Fact]
+    public void CamelCasePayload_IsRejected_NamingEachExpectedProperty()
+    {
+        RegisterTyped("Order", required: true, PermissiveSchema);
+
+        var result = TickerRequestPayloadValidator.Validate("Order", Utf8("{\"orderId\":\"abc\",\"quantity\":5}"));
+
+        Assert.False(result.IsValid);
+        Assert.All(result.Errors, error => Assert.Equal(TickerRequestValidationErrorCode.PropertyNameCaseMismatch, error.Code));
+        Assert.Equal(["/orderId", "/quantity"], result.Errors.Select(x => x.Location));
+        Assert.Contains("'OrderId'", result.Errors[0].Message);
+    }
+
+    [Fact]
+    public void ExactNames_WithAnUnknownExtraProperty_RemainValid()
+    {
+        RegisterTyped("Order", required: true, PermissiveSchema);
+
+        var result = TickerRequestPayloadValidator.Validate("Order",
+            Utf8("{\"OrderId\":\"abc\",\"Quantity\":5,\"Source\":\"import\"}"));
+
+        Assert.True(result.IsValid, string.Join("; ", result.Errors.Select(x => x.Message)));
+        Assert.Equal(5, Assert.IsType<OrderRequest>(result.Value).Quantity);
+    }
+
+    [Fact]
+    public void CaseMismatchInsideACollection_IsReportedWithItsLocation()
+    {
+        RegisterTyped("Lines", required: true, PermissiveSchema, ValidatorTestJsonContext.Default.OrderWithLines);
+
+        var result = TickerRequestPayloadValidator.Validate("Lines",
+            Utf8("{\"OrderId\":\"abc\",\"Lines\":[{\"Sku\":\"a\"},{\"sku\":\"b\"}]}"));
+
+        var error = Assert.Single(result.Errors);
+        Assert.Equal(TickerRequestValidationErrorCode.PropertyNameCaseMismatch, error.Code);
+        Assert.Equal("/Lines/1/sku", error.Location);
+    }
 
     // ---------------------------------------------------------------
     // Request-less vs required payload semantics
@@ -440,7 +486,19 @@ internal sealed class OrderRequest
     public int Quantity { get; set; }
 }
 
+internal sealed class OrderWithLines
+{
+    public string OrderId { get; set; }
+    public List<OrderLine> Lines { get; set; }
+}
+
+internal sealed class OrderLine
+{
+    public string Sku { get; set; }
+}
+
 [JsonSerializable(typeof(OrderRequest))]
+[JsonSerializable(typeof(OrderWithLines))]
 internal sealed partial class ValidatorTestJsonContext : JsonSerializerContext
 {
 }

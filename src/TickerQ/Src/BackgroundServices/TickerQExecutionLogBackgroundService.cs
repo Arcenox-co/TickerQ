@@ -15,7 +15,7 @@ namespace TickerQ.BackgroundServices;
 internal sealed class TickerQExecutionLogBackgroundService(InMemoryTickerExecutionLogStore memory,
     ExecutionLogOptions options, SchedulerOptionsBuilder scheduler, IServiceProvider services,
     ITickerQActivationGate activation, ILogger<TickerQExecutionLogBackgroundService> logger,
-    TickerQRuntimeDiagnostics diagnostics = null) : BackgroundService
+    TickerQRuntimeDiagnostics diagnostics = null) : TickerQBackgroundService(logger)
 {
     private bool _ready;
     private DateTime _nextCleanup;

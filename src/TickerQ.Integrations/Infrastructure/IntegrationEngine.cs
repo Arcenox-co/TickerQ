@@ -6,10 +6,11 @@ using Microsoft.Extensions.Logging;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
 using TickerQ.Utilities.Integrations;
+using TickerQ.Utilities.Infrastructure;
 
 namespace TickerQ.Integrations.Infrastructure;
 
-internal sealed class IntegrationEngine : BackgroundService, ITickerQFailureNotifier, ITickerIntegrationAdminService
+internal sealed class IntegrationEngine : TickerQBackgroundService, ITickerQFailureNotifier, ITickerIntegrationAdminService
 {
     private readonly IntegrationOptions _options;
     private readonly MonitoringStateStore? _monitoring;
@@ -24,6 +25,7 @@ internal sealed class IntegrationEngine : BackgroundService, ITickerQFailureNoti
 
     public IntegrationEngine(IntegrationOptions options, IntegrationConfigurationService configuration,
         IntegrationTransport transport, ILogger<IntegrationEngine> logger, MonitoringStateStore? monitoring = null)
+        : base(logger)
     {
         _monitoring = monitoring;
         _options = options; _configuration = configuration; _transport = transport; _logger = logger;

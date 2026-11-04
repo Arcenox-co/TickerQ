@@ -1147,7 +1147,7 @@ public sealed class TickerQExecutionAdmissionTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Disposal_CancelsAndUnregistersOrchestrationWaitingOutsideExecutionSlots(bool retrying)
+    public async Task Disposal_HandsBackAndUnregistersOrchestrationWaitingOutsideExecutionSlots(bool retrying)
     {
         await using var rig = new ExecutionRig(1);
         var permit = rig.FunctionGate.GetSemaphoreOrNull("Waiting", 1)!;
@@ -1182,7 +1182,11 @@ public sealed class TickerQExecutionAdmissionTests
             await rig.Scheduler.DisposeAsync();
             await rig.AssertDrainedAsync();
 
-            Assert.Equal(TickerStatus.Cancelled, job.Status);
+            // A stopping node hands the work back rather than recording a cancellation nobody asked
+            // for: never started is released; already attempted is left for stale recovery.
+            Assert.Equal(TickerStatus.InProgress, job.Status);
+            await rig.Manager.Received(retrying ? 0 : 1).ReleaseAcquiredResources(
+                Arg.Is<InternalFunctionContext[]>(x => x.Single() == job), CancellationToken.None);
             Assert.Equal(retrying ? 1 : 0, calls);
             Assert.Equal(retrying ? 1 : 0, permit.CurrentCount);
         }

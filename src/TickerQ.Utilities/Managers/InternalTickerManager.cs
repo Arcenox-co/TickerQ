@@ -185,10 +185,21 @@ namespace TickerQ.Utilities.Managers
             if (cronTime is null && timeTickerTime is null)
                 return (Timeout.InfiniteTimeSpan, []);
 
-            var scheduledFor = cronTime is null ? timeTickerTime!.Value
-                : timeTickerTime is null ? cronTime.Value
-                : cronTime.Value < timeTickerTime.Value ? cronTime.Value : timeTickerTime.Value;
+            // Queued is a short handoff lock (recovery resets one older than QueuedLockTimeout), so a
+            // time ticker is claimed only once it is due before the next read could happen. A later
+            // one is not claimed now: the loop wakes that much before it is due and claims it then.
             var now = _clock.UtcNow;
+            var claimLead = _schedulerOptions?.MinPollingInterval > TimeSpan.Zero
+                ? _schedulerOptions.MinPollingInterval
+                : TimeSpan.Zero;
+            var timeTickerClaimable = timeTickerTime.HasValue && timeTickerTime.Value <= now + claimLead;
+            var timeTickerWake = timeTickerTime.HasValue && !timeTickerClaimable
+                ? timeTickerTime.Value - claimLead
+                : timeTickerTime;
+
+            var scheduledFor = cronTime is null ? timeTickerWake!.Value
+                : timeTickerWake is null ? cronTime.Value
+                : cronTime.Value < timeTickerWake.Value ? cronTime.Value : timeTickerWake.Value;
             var dispatchBoundary = scheduledFor > now ? scheduledFor : now;
 
             // Providers return bounded whole-second buckets, which can also contain
@@ -196,7 +207,7 @@ namespace TickerQ.Utilities.Managers
             // sharing a second does not make a later ticker ready to execute.
             // Both kinds still drain together when overdue, even at different times.
             var includeCron = cronTime.HasValue && cronTime.Value <= dispatchBoundary;
-            var includeTimeTickers = timeTickerTime.HasValue && timeTickerTime.Value <= dispatchBoundary;
+            var includeTimeTickers = timeTickerClaimable && timeTickerTime.Value <= dispatchBoundary;
 
             InternalFunctionContext[] cronFunctions = [];
             InternalFunctionContext[] timeFunctions = [];
@@ -255,10 +266,11 @@ namespace TickerQ.Utilities.Managers
                         PreviousRootStatus = ticker.ChainRetryPreviousStatus.Value
                     }, _runtimePartitionKey);
             }
-            return TimeTickerContextBuilder.Build(ticker, node => new InternalFunctionContext
+            return TimeTickerContextBuilder.Build(ticker, (Partition: _runtimePartitionKey, RootId: chainRootId, Generation: chainGeneration),
+                static (node, state) => new InternalFunctionContext
             {
                 FunctionName = node.Function,
-                RuntimePartitionKey = _runtimePartitionKey,
+                RuntimePartitionKey = state.Partition,
                 RequestContractVersion = node.RequestContractVersion,
                 RequestContractFingerprint = node.RequestContractFingerprint,
                 TickerId = node.Id,
@@ -270,8 +282,8 @@ namespace TickerQ.Utilities.Managers
                 MaximumLateness = node.MaximumLateness,
                 ParentId = node.ParentId,
                 AcquisitionToken = node.AcquisitionToken,
-                ChainRootId = chainRootId,
-                ChainGeneration = chainGeneration,
+                ChainRootId = state.RootId,
+                ChainGeneration = state.Generation,
                 RunCondition = node.RunCondition ?? RunCondition.OnAnyCompletedStatus
             });
         }
@@ -608,7 +620,7 @@ namespace TickerQ.Utilities.Managers
             InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
         {
             EnsureExactRuntimePartition(functionContext);
-            var props = functionContext.GetPropsToUpdate();
+            var props = functionContext.TrackedProperties;
             var carriesResultMutation = props.Contains(nameof(InternalFunctionContext.ResultEnvelope));
             var publishesResult = functionContext.ResultEnvelope != null && carriesResultMutation;
             var terminal = IsTerminalMutation(functionContext);
@@ -724,7 +736,7 @@ namespace TickerQ.Utilities.Managers
             {
                 var message = $"Terminal completion for TickerFunction '{functionContext.FunctionName}' " +
                               $"(ticker {functionContext.TickerId}) was not acknowledged by the exact acquisition generation.";
-                if (functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope)))
+                if (functionContext.IsPropertyTracked(nameof(InternalFunctionContext.ResultEnvelope)))
                     throw new TickerResultNotAcknowledgedException(message);
                 throw new TickerTerminalUpdateNotAcknowledgedException(message);
             }
@@ -769,7 +781,7 @@ namespace TickerQ.Utilities.Managers
             {
                 var message = $"Terminal completion for TickerFunction '{functionContext.FunctionName}' " +
                               $"(ticker {functionContext.TickerId}) and its Node finalization intent were not acknowledged by the exact acquisition generation.";
-                if (functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope)))
+                if (functionContext.IsPropertyTracked(nameof(InternalFunctionContext.ResultEnvelope)))
                     throw new TickerResultNotAcknowledgedException(message);
                 throw new TickerTerminalUpdateNotAcknowledgedException(message);
             }
@@ -779,7 +791,7 @@ namespace TickerQ.Utilities.Managers
         }
 
         private static bool IsTerminalMutation(InternalFunctionContext context)
-            => context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+            => context.IsPropertyTracked(nameof(InternalFunctionContext.Status)) &&
                context.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                    or TickerStatus.Cancelled or TickerStatus.Skipped;
 

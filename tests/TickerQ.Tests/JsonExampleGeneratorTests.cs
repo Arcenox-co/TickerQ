@@ -6,6 +6,9 @@ using TickerQ.Utilities;
 
 namespace TickerQ.Tests;
 
+// The generator reads the process-wide TickerHelper.RequestJsonSerializerOptions, which AddTickerQ
+// replaces; running beside those tests swaps the resolver mid-generation and yields "[]".
+[Collection("TickerFunctionProviderState")]
 public class JsonExampleGeneratorTests
 {
     private static readonly JsonSerializerOptions DeserializeOptions = new()

@@ -501,6 +501,12 @@ namespace TickerQ.Utilities.Interfaces
         Task<int> SetTimeTickerDeleteBehaviorAsync(Guid rootId, ChainDeleteBehavior behavior, CancellationToken cancellationToken = default)
             => throw new NotSupportedException("This provider does not support updating chain deletion policies.");
         /// <summary>
+        /// Whether <see cref="ReplaceTimeTickerChainAsync"/> replaces a chain atomically on this store, so
+        /// the Dashboard can offer chain editing and report a clear refusal where it cannot.
+        /// </summary>
+        bool SupportsTimeTickerChainReplacement => false;
+
+        /// <summary>
         /// Atomically replaces the entire time-ticker chain aggregate rooted at
         /// <paramref name="oldRootId"/> with <paramref name="newRoot"/> (root plus its whole
         /// descendant tree). Implementations MUST persist the complete replacement first and
@@ -511,8 +517,8 @@ namespace TickerQ.Utilities.Interfaces
         ///
         /// The default FAILS CLOSED: a provider that has not implemented a genuinely atomic
         /// replace must not silently fall back to a non-atomic delete-then-create (the very
-        /// data-loss window this method exists to close). EF Core and the in-memory provider
-        /// override it; Mongo/Redis (no transactional replace yet) surface a clear error.
+        /// data-loss window this method exists to close). A provider that implements it also
+        /// advertises <see cref="SupportsTimeTickerChainReplacement"/>, which callers check first.
         /// </summary>
         Task<int> ReplaceTimeTickerChainAsync(Guid oldRootId, TTimeTicker newRoot, CancellationToken cancellationToken = default)
             => throw new NotSupportedException(

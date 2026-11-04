@@ -10,6 +10,7 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
+using TickerQ.Utilities.Infrastructure;
 
 namespace TickerQ.BackgroundServices;
 
@@ -19,7 +20,7 @@ internal sealed class TickerQClusterControlBackgroundService<TTimeTicker, TCronT
     ITickerQHostScheduler hostScheduler,
     SchedulerOptionsBuilder options,
     ITickerClock clock,
-    ILogger<TickerQClusterControlBackgroundService<TTimeTicker, TCronTicker>> logger) : BackgroundService
+    ILogger<TickerQClusterControlBackgroundService<TTimeTicker, TCronTicker>> logger) : TickerQBackgroundService(logger)
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
 {
@@ -31,6 +32,9 @@ internal sealed class TickerQClusterControlBackgroundService<TTimeTicker, TCronT
     private readonly string _nodeKey = TickerQClusterIdentity.NodeKey(options.ExecutionOwnerId);
     private DateTime _nextHeartbeatUtc;
     private DateTime _nextPruneUtc;
+    // The first heartbeat is written before the scheduler starts, and Stop/Start from the Dashboard
+    // changes it between heartbeats; a change is reported at the next poll, not the next heartbeat.
+    private bool _reportedRunning;
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -47,7 +51,8 @@ internal sealed class TickerQClusterControlBackgroundService<TTimeTicker, TCronT
             try
             {
                 var now = clock.UtcNow;
-                if (now >= _nextHeartbeatUtc) await WriteHeartbeatAsync(stoppingToken).ConfigureAwait(false);
+                if (now >= _nextHeartbeatUtc || hostScheduler.IsRunning != _reportedRunning)
+                    await WriteHeartbeatAsync(stoppingToken).ConfigureAwait(false);
                 await ProcessCommandsAsync(now, stoppingToken).ConfigureAwait(false);
                 if (now >= _nextPruneUtc)
                 {
@@ -118,8 +123,9 @@ internal sealed class TickerQClusterControlBackgroundService<TTimeTicker, TCronT
     {
         var now = clock.UtcNow;
         _nextHeartbeatUtc = now + HeartbeatInterval;
+        _reportedRunning = hostScheduler.IsRunning;
         return store.UpsertNodeAsync(
-            CreateNode(now, hostScheduler.IsRunning, options.RuntimeActivationEpoch), cancellationToken);
+            CreateNode(now, _reportedRunning, options.RuntimeActivationEpoch), cancellationToken);
     }
 
     private TickerQNodeRecord CreateNode(DateTime now, bool running, long activationEpoch) => new()

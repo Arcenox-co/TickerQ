@@ -21,4 +21,16 @@ internal static class LuaScriptLoader
         using var reader = new StreamReader(stream);
         return reader.ReadToEnd();
     }
+
+    /// <summary>
+    /// Loads <paramref name="scriptName"/> after the shared fragments it calls, as one script. A
+    /// fragment only defines local functions, so the scripts that share a rule keep one copy of it.
+    /// </summary>
+    internal static string Load(string scriptName, params string[] fragments)
+    {
+        var parts = new string[fragments.Length + 1];
+        for (var i = 0; i < fragments.Length; i++) parts[i] = Load(fragments[i]);
+        parts[^1] = Load(scriptName);
+        return string.Join("\n", parts);
+    }
 }

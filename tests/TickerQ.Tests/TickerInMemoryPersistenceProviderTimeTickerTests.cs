@@ -91,6 +91,25 @@ public class TickerInMemoryPersistenceProviderTimeTickerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Delete_QueuedChainNotYetStarted_RemovesIt_AndFencesItsClaim()
+    {
+        var root = CreateTicker();
+        root.Children.Add(CreateTicker(useDefaultExecutionTime: false));
+        await _provider.AddTimeTickers([root]);
+        var stored = await _provider.GetTimeTickerById(root.Id);
+        TimeTickerEntity? queued = null;
+        await foreach (var item in _provider.QueueTimeTickers([new TimeTickerEntity { Id = root.Id, UpdatedAt = stored.UpdatedAt }]))
+            queued = item;
+        Assert.NotNull(queued);
+
+        Assert.Equal(2, await _provider.RemoveTimeTickers([root.Id]));
+
+        Assert.Null(await _provider.GetTimeTickerById(root.Id));
+        Assert.Empty(await _provider.TransitionQueuedTimeTickersToInProgressAsync(
+            [new AcquisitionLease(root.Id, queued!.AcquisitionToken)]));
+    }
+
+    [Fact]
     public async Task CancelPending_CancelsEntirePendingSubtree_AndRejectsQueuedSnapshot()
     {
         var root = CreateTicker();

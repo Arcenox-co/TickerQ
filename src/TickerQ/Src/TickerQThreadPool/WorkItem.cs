@@ -40,29 +40,35 @@ public readonly struct WorkItem
 // Cancellation can finish a queued attempt immediately, but once the delegate starts
 // its completion owns the actual lifetime. A non-cooperative running job must not free
 // its execution slot merely because its caller's token was cancelled.
-internal sealed class WorkItemCompletion
+internal sealed class WorkItemCompletion : TaskCompletionSource<bool>
 {
-    private readonly TaskCompletionSource<bool> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _state;
-    internal Task Task => _completion.Task;
+    internal WorkItemCompletion() : base(TaskCreationOptions.RunContinuationsAsynchronously) { }
+    internal new Task Task => base.Task;
     internal bool TryBegin() => Interlocked.CompareExchange(ref _state, 1, 0) == 0;
     internal void CancelBeforeStart(CancellationToken token)
     {
-        if (Interlocked.CompareExchange(ref _state, 2, 0) == 0) _completion.TrySetCanceled(token);
+        if (Interlocked.CompareExchange(ref _state, 2, 0) == 0) TrySetCanceled(token);
     }
+
+    /// <summary>Cancels a not-yet-started attempt when <paramref name="token"/> fires; no closure.</summary>
+    internal CancellationTokenRegistration CancelBeforeStartOn(CancellationToken token)
+        => token.CanBeCanceled
+            ? token.UnsafeRegister(static (state, cancelled) => ((WorkItemCompletion)state!).CancelBeforeStart(cancelled), this)
+            : default;
     internal void CompleteCancellation(CancellationToken token)
     {
         Interlocked.Exchange(ref _state, 2);
-        _completion.TrySetCanceled(token);
+        TrySetCanceled(token);
     }
     internal void CompleteFailure(Exception exception)
     {
         Interlocked.Exchange(ref _state, 2);
-        _completion.TrySetException(exception);
+        TrySetException(exception);
     }
     internal void CompleteSuccess()
     {
         Interlocked.Exchange(ref _state, 2);
-        _completion.TrySetResult(true);
+        TrySetResult(true);
     }
 }

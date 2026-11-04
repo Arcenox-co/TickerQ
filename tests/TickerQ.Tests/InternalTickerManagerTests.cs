@@ -538,10 +538,28 @@ public class InternalTickerManagerTests
     }
 
     [Fact]
-    public async Task GetNextTickers_TimeTickersAvailable_ReturnsThemWithCorrectDelay()
+    public async Task GetNextTickers_TimeTickerDueAfterTheNextRead_IsNotClaimed_AndTheLoopWakesToClaimIt()
+    {
+        var timeTicker = new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(), Function = "TimeFunc", ExecutionTime = _now.AddMinutes(5), Children = []
+        };
+        _persistence.GetEarliestTimeTickers(Arg.Any<CancellationToken>()).Returns(new[] { timeTicker });
+
+        var (timeRemaining, functions) = await _manager.GetNextTickers(CancellationToken.None);
+
+        // Queued is a short handoff lock: claiming now would hold it for five minutes. The loop
+        // wakes one polling floor (the default second) before the job is due and claims it then.
+        Assert.Empty(functions);
+        Assert.Equal(TimeSpan.FromMinutes(5) - TimeSpan.FromSeconds(1), timeRemaining);
+        _persistence.DidNotReceive().QueueTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetNextTickers_TimeTickerDueBeforeTheNextRead_IsClaimed_WithItsDelay()
     {
         var tickerId = Guid.NewGuid();
-        var executionTime = _now.AddMinutes(5);
+        var executionTime = _now.AddMilliseconds(500);
         var timeTicker = new TimeTickerEntity
         {
             Id = tickerId,
@@ -560,7 +578,7 @@ public class InternalTickerManagerTests
 
         var (timeRemaining, functions) = await _manager.GetNextTickers(CancellationToken.None);
 
-        Assert.Equal(TimeSpan.FromMinutes(5), timeRemaining);
+        Assert.Equal(TimeSpan.FromMilliseconds(500), timeRemaining);
         Assert.Single(functions);
         Assert.Equal(tickerId, functions[0].TickerId);
         Assert.Equal("TimeFunc", functions[0].FunctionName);
@@ -621,7 +639,8 @@ public class InternalTickerManagerTests
     public async Task GetNextTickers_SameSecondDifferentExactTimes_DoesNotQueueLaterKind(
         bool cronFirst, bool earliestAlreadyDue)
     {
-        var clockNow = _now.AddMilliseconds(earliestAlreadyDue ? 500 : -1000);
+        // Both kinds are within the claim lead, so only their exact times decide.
+        var clockNow = _now.AddMilliseconds(earliestAlreadyDue ? 500 : 0);
         _clock.UtcNow.Returns(clockNow);
         var time = new TimeTickerEntity
         {
@@ -651,7 +670,7 @@ public class InternalTickerManagerTests
 
         var (remaining, functions) = await _manager.GetNextTickers();
 
-        Assert.Equal(earliestAlreadyDue ? TimeSpan.Zero : TimeSpan.FromMilliseconds(1100), remaining);
+        Assert.Equal(earliestAlreadyDue ? TimeSpan.Zero : TimeSpan.FromMilliseconds(100), remaining);
         Assert.Equal(cronFirst ? occurrence.Id : time.Id, Assert.Single(functions).TickerId);
         if (cronFirst)
             _persistence.DidNotReceive().QueueTimeTickers(
@@ -668,7 +687,7 @@ public class InternalTickerManagerTests
         var childId = Guid.NewGuid();
         var grandchildId = Guid.NewGuid();
         var greatGrandchildId = Guid.NewGuid();
-        var executionTime = _now.AddMinutes(5);
+        var executionTime = _now.AddMilliseconds(500);
         var root = new TimeTickerEntity
         {
             Id = rootId,
@@ -789,6 +808,9 @@ public class InternalTickerManagerTests
         {
             var targetTime = new DateTime(2025, 6, 15, 12, 30, 0, DateTimeKind.Utc);
 
+            // Read just inside the claim lead, when the time ticker is claimed too.
+            _clock.UtcNow.Returns(targetTime.AddMilliseconds(-500));
+
             // Time ticker at 12:30:00
             var timeTickerId = Guid.NewGuid();
             var timeTicker = new TimeTickerEntity
@@ -858,13 +880,13 @@ public class InternalTickerManagerTests
         CronScheduleCache.TimeZoneInfo = TimeZoneInfo.Utc;
         try
         {
-            // Time ticker at 12:05
+            // Time ticker due within the claim lead, well before the 12:30 cron
             var timeTickerId = Guid.NewGuid();
             var timeTicker = new TimeTickerEntity
             {
                 Id = timeTickerId,
                 Function = "TimeFunc",
-                ExecutionTime = _now.AddMinutes(5),
+                ExecutionTime = _now.AddMilliseconds(500),
                 Retries = 0,
                 RetryIntervals = Array.Empty<int>(),
                 Children = new List<TimeTickerEntity>()
@@ -885,7 +907,7 @@ public class InternalTickerManagerTests
 
             var (timeRemaining, functions) = await _manager.GetNextTickers(CancellationToken.None);
 
-            Assert.Equal(TimeSpan.FromMinutes(5), timeRemaining);
+            Assert.Equal(TimeSpan.FromMilliseconds(500), timeRemaining);
             Assert.Single(functions);
             Assert.Equal(timeTickerId, functions[0].TickerId);
             Assert.Equal(TickerType.TimeTicker, functions[0].Type);

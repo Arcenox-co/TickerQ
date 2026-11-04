@@ -7,6 +7,7 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Models;
+using TickerQ.Utilities.Infrastructure;
 
 namespace TickerQ.BackgroundServices;
 
@@ -22,7 +23,7 @@ namespace TickerQ.BackgroundServices;
 /// per sweep. A failed sweep is logged and the loop continues at the next interval.
 /// </para>
 /// </summary>
-internal sealed class TickerQRetentionBackgroundService : BackgroundService
+internal sealed class TickerQRetentionBackgroundService : TickerQBackgroundService
 {
     private readonly IInternalTickerManager _internalTickerManager;
     private readonly JobRetentionOptions _options;
@@ -42,6 +43,7 @@ internal sealed class TickerQRetentionBackgroundService : BackgroundService
         ITickerClock clock,
         ILogger<TickerQRetentionBackgroundService> logger,
         ITickerQActivationGate activationGate)
+        : base(logger)
     {
         _internalTickerManager = internalTickerManager;
         _options = options;

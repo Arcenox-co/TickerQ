@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { Braces, FileJson, ListTree, Pencil, Plus, ShieldCheck, Trash2 } from "lucide-react";
+import { Braces, FileJson, ListTree, Pencil, Plus, ShieldCheck, Trash2, Wand2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,6 +36,7 @@ import type {
 } from "@/services/api-types";
 import {
   classifyExampleAction,
+  correctPropertyCasing,
   emptyValueForNode,
   exceedsSchemaRenderDepth,
   initStructuredDraft,
@@ -49,6 +50,7 @@ import {
   resolveSchemaNode,
   sameJsonValue,
   syncStructuredDraft,
+  type CasingCorrection,
   type ResolvedProperty,
 } from "@/lib/request-schema";
 
@@ -87,6 +89,31 @@ export function RequestPayloadEditor({
 }) {
   const contract = functionInfo?.requestContract ?? null;
   const [open, setOpen] = useState(false);
+  const [corrections, setCorrections] = useState<CasingCorrection[]>([]);
+
+  // Typing clears the note; a correction replaces it with what was renamed this time.
+  const change = (next: string) => {
+    setCorrections([]);
+    onChange(next);
+  };
+
+  // The server binds property names exactly and rejects one that differs only by case, so raw
+  // JSON is matched to the contract's names when the user leaves it, rather than while typing.
+  const correctCasing = (text: string) => {
+    if (!contract?.schemaJson || !text.trim()) return text;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return text;
+    }
+    const result = correctPropertyCasing(contract.schemaJson, parsed);
+    if (result.corrections.length === 0) return text;
+    const next = JSON.stringify(result.value, null, 2);
+    onChange(next);
+    setCorrections(result.corrections);
+    return next;
+  };
 
   if (functionInfo && !contract && !functionInfo.requestType) {
     return (
@@ -122,6 +149,7 @@ export function RequestPayloadEditor({
         </span>
       </button>
       {error && <p className="text-[11px] text-destructive">{error}</p>}
+      {!open && <CasingNote corrections={corrections} />}
 
       {open && (
         <PayloadDialog
@@ -130,11 +158,32 @@ export function RequestPayloadEditor({
           functionInfo={functionInfo}
           contract={contract}
           value={value}
-          onChange={onChange}
+          onChange={change}
           onValidityChange={onValidityChange}
+          corrections={corrections}
+          correctCasing={correctCasing}
         />
       )}
     </div>
+  );
+}
+
+function CasingNote({ corrections }: { corrections: CasingCorrection[] }) {
+  if (corrections.length === 0) return null;
+  return (
+    <p className="flex items-start gap-1.5 text-[10px] text-muted-foreground" role="status">
+      <Wand2 className="mt-px h-3 w-3 shrink-0 text-primary" />
+      <span>
+        Matched to the contract's property names:{" "}
+        {corrections.map((correction, index) => (
+          <span key={correction.path}>
+            {index > 0 && ", "}
+            <code className="font-mono">{correction.from}</code> → <code className="font-mono">{correction.to}</code>
+          </span>
+        ))}
+        .
+      </span>
+    </p>
   );
 }
 
@@ -184,6 +233,8 @@ function PayloadDialog({
   value,
   onChange,
   onValidityChange,
+  corrections,
+  correctCasing,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -192,6 +243,8 @@ function PayloadDialog({
   value: string;
   onChange: (value: string) => void;
   onValidityChange?: (valid: boolean) => void;
+  corrections: CasingCorrection[];
+  correctCasing: (text: string) => string;
 }) {
   const structuredRoot = useMemo(() => resolveRootObject(contract?.schemaJson), [contract]);
   const canUseFields = !!contract && !!structuredRoot;
@@ -226,6 +279,8 @@ function PayloadDialog({
 
   const switchToStructured = () => {
     if (!isRawPayloadJsonValid(value)) return;
+    // Fields read the contract's exact names, so a differently cased key would show as empty.
+    correctCasing(value);
     invalidPaths.current.delete("$raw");
     onValidityChange?.(invalidPaths.current.size === 0);
     setRawMode(false);
@@ -241,7 +296,10 @@ function PayloadDialog({
   const rawValid = isRawPayloadJsonValid(value);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => {
+      if (!next && rawMode) correctCasing(value);
+      onOpenChange(next);
+    }}>
       <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
         <DialogHeader className="gap-1 border-b border-border/60 p-4">
           <DialogTitle className="flex items-center gap-2 text-sm">
@@ -311,6 +369,7 @@ function PayloadDialog({
                 id={`${errorId}-raw`}
                 value={value}
                 onChange={(event) => applyRawValue(event.target.value)}
+                onBlur={() => correctCasing(value)}
                 placeholder={functionInfo?.requestExample ?? '{"key":"value"}'}
                 rows={12}
                 aria-invalid={!rawValid}
@@ -322,12 +381,16 @@ function PayloadDialog({
                   Enter valid JSON.
                 </p>
               )}
+              <CasingNote corrections={corrections} />
             </div>
           )}
         </div>
 
         <DialogFooter className="m-0">
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+          <Button type="button" variant="outline" onClick={() => {
+            if (rawMode) correctCasing(value);
+            onOpenChange(false);
+          }}>
             Done
           </Button>
         </DialogFooter>

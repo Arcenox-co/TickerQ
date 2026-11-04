@@ -34,7 +34,9 @@ internal interface ITickerOptionsSeeding
 
 internal class TickerExecutionContext
 {
-   private long _nextOccurrenceTicks;
+   // -1 is "nothing planned". A zero default would read as a wake planned for year 1, which every
+   // newly scheduled job compares as later than, so a fresh node would skip its first restarts.
+   private long _nextOccurrenceTicks = -1;
    internal Action<IServiceProvider> ExternalProviderApplicationAction { get; set; }
    internal Action<object> DashboardApplicationAction { get; set; }
    internal string LicenseCertificatePath { get; set; }

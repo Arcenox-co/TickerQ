@@ -646,8 +646,8 @@ namespace TickerQ.MongoDB.Infrastructure
                 : (DateTime?)null;
 
         private static bool IsFencedTerminalWrite(InternalFunctionContext functionContext)
-            => functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ReleaseLock)) ||
-               (functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+            => functionContext.IsPropertyTracked(nameof(InternalFunctionContext.ReleaseLock)) ||
+               (functionContext.IsPropertyTracked(nameof(InternalFunctionContext.Status)) &&
                 functionContext.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                     or TickerStatus.Cancelled or TickerStatus.Skipped);
 
@@ -1137,19 +1137,26 @@ namespace TickerQ.MongoDB.Infrastructure
             return await session.WithTransactionAsync(async (s, ct) =>
             {
                 await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
-                if (!await LockTerminalReplayAuthorityAsync(s, context, ct).ConfigureAwait(false))
-                    return false;
-                var stored = await _context.TickerResults.Find(
-                        s, Builders<BsonDocument>.Filter.Eq("_id", expected["_id"]))
-                    .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-                var matches = stored != null &&
-                    stored.GetValue("Kind", BsonNull.Value).Equals(expected["Kind"]) &&
-                    stored.GetValue("TerminalMutationDigest", BsonNull.Value)
-                        .Equals(expected["TerminalMutationDigest"]);
-                if (AfterTerminalReplayAuthorityForTestAsync != null)
-                    await AfterTerminalReplayAuthorityForTestAsync(ct).ConfigureAwait(false);
-                return matches;
+                return await HasExactTerminalEvidenceAsync(s, expected, context, ct).ConfigureAwait(false);
             }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Runs inside a transaction that already touched the graph fence.
+        private async Task<bool> HasExactTerminalEvidenceAsync(IClientSessionHandle session,
+            BsonDocument expected, InternalFunctionContext context, CancellationToken cancellationToken)
+        {
+            if (!await LockTerminalReplayAuthorityAsync(session, context, cancellationToken).ConfigureAwait(false))
+                return false;
+            var stored = await _context.TickerResults.Find(
+                    session, Builders<BsonDocument>.Filter.Eq("_id", expected["_id"]))
+                .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            var matches = stored != null &&
+                stored.GetValue("Kind", BsonNull.Value).Equals(expected["Kind"]) &&
+                stored.GetValue("TerminalMutationDigest", BsonNull.Value)
+                    .Equals(expected["TerminalMutationDigest"]);
+            if (AfterTerminalReplayAuthorityForTestAsync != null)
+                await AfterTerminalReplayAuthorityForTestAsync(cancellationToken).ConfigureAwait(false);
+            return matches;
         }
 
         private async Task<bool> LockTerminalReplayAuthorityAsync(
@@ -1318,9 +1325,9 @@ namespace TickerQ.MongoDB.Infrastructure
         private static void ValidateSuccessfulCommit(InternalFunctionContext context)
         {
             if (context == null) throw new ArgumentNullException(nameof(context));
-            if (!context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+            if (!context.IsPropertyTracked(nameof(InternalFunctionContext.Status)) ||
                 context.Status is not (TickerStatus.Done or TickerStatus.DueDone) ||
-                !context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope)))
+                !context.IsPropertyTracked(nameof(InternalFunctionContext.ResultEnvelope)))
                 throw new InvalidOperationException(
                     "Atomic result persistence accepts only a successful terminal mutation with an explicit optional result envelope.");
         }
@@ -1551,10 +1558,10 @@ namespace TickerQ.MongoDB.Infrastructure
             ArgumentNullException.ThrowIfNull(context);
             ArgumentNullException.ThrowIfNull(intent);
             var successful = context.Status is TickerStatus.Done or TickerStatus.DueDone;
-            if (!context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+            if (!context.IsPropertyTracked(nameof(InternalFunctionContext.Status)) ||
                 context.Status is not (TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                     or TickerStatus.Cancelled or TickerStatus.Skipped) ||
-                (successful && !context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope))))
+                (successful && !context.IsPropertyTracked(nameof(InternalFunctionContext.ResultEnvelope))))
                 throw new InvalidOperationException(
                     "Durable Node finalization accepts only a terminal mutation; success requires an explicit optional result envelope.");
             if (context.Type != intent.TickerType || context.TickerId != intent.TickerId ||
@@ -1819,10 +1826,10 @@ namespace TickerQ.MongoDB.Infrastructure
             if (functionContext == null)
                 throw new ArgumentNullException(nameof(functionContext));
             var successful = functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
-            if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+            if (!functionContext.IsPropertyTracked(nameof(InternalFunctionContext.Status)) ||
                 functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                     or TickerStatus.Cancelled or TickerStatus.Skipped) ||
-                (successful && !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope))))
+                (successful && !functionContext.IsPropertyTracked(nameof(InternalFunctionContext.ResultEnvelope))))
                 throw new InvalidOperationException(
                     "Acknowledged persistence accepts only a terminal mutation; success requires an explicit optional result envelope.");
 
@@ -1837,8 +1844,6 @@ namespace TickerQ.MongoDB.Infrastructure
                 : TimeResultKind;
             var expectedEvidence = ToTerminalEvidenceDocument(
                 functionContext.TickerId, resultKind, functionContext);
-            if (await HasExactTerminalEvidenceAsync(expectedEvidence, functionContext).ConfigureAwait(false))
-                return true;
 
             using var session = await _context.Database.Client
                 .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -1848,6 +1853,11 @@ namespace TickerQ.MongoDB.Infrastructure
                     async (s, ct) =>
                     {
                         await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                        // An exact replay of a committed mutation acknowledges without writing again. The
+                        // check shares this transaction, so nothing can land between it and the update.
+                        if (await HasExactTerminalEvidenceAsync(s, expectedEvidence, functionContext, ct)
+                                .ConfigureAwait(false))
+                            return true;
                         var now = _clock.UtcNow;
                         UpdateResult acknowledged;
 
@@ -2157,6 +2167,7 @@ namespace TickerQ.MongoDB.Infrastructure
                 var now = _clock.UtcNow;
                 var update = Builders<TTimeTicker>.Update
                     .Set(x => x.Status, TickerStatus.Cancelled)
+                    .Set(x => x.ExceptionMessage, TickerCancellationReasons.PendingRequest)
                     .Set(x => x.UpdatedAt, now).Set(x => x.ExecutedAt, now)
                     .Set(x => x.LockHolder, null).Set(x => x.LockedAt, null)
                     .Set(x => x.LeaseUntil, null).Set(x => x.AcquisitionToken, null);
@@ -4571,6 +4582,8 @@ namespace TickerQ.MongoDB.Infrastructure
             return count == referencedParents.Count;
         }
 
+        public bool SupportsTimeTickerChainReplacement => !TransactionsKnownUnavailable;
+
         public async Task<int> ReplaceTimeTickerChainAsync(
             Guid oldRootId, TTimeTicker newRoot, CancellationToken cancellationToken = default)
         {
@@ -4602,9 +4615,7 @@ namespace TickerQ.MongoDB.Infrastructure
                             oldAggregate.Where(x => x.Id != oldRootId).Select(x => x.Status))) return 0;
                     var now = _clock.UtcNow;
                     if (oldAggregate.Count != oldIds.Count ||
-                        oldAggregate.Any(x => x.Status == TickerStatus.InProgress ||
-                                              x.AcquisitionToken.HasValue ||
-                                              (x.LeaseUntil.HasValue && x.LeaseUntil > now)))
+                        oldAggregate.Any(x => ChainDeletionPolicy.IsStarted(x.Status, x.AcquisitionToken, x.LeaseUntil, now)))
                         return 0;
 
                     var inserted = await InsertWithChildren(
@@ -4705,10 +4716,10 @@ namespace TickerQ.MongoDB.Infrastructure
                 if (ChainDeletionPolicy.BlocksDeletion(requestedRoot.DeleteBehavior,
                         snapshots.Where(x => x.Id != id).Select(x => x.Status))) continue;
 
-                // The explicit delete is aggregate-atomic: one active status, acquisition token, or live
-                // lease anywhere in the subtree retains every node and every result sidecar.
+                // The explicit delete is aggregate-atomic: one started node anywhere in the subtree
+                // retains every node and every result sidecar.
                 if (snapshots.Count != allIds.Count || snapshots.Any(x =>
-                        x.Status == TickerStatus.InProgress || x.AcquisitionToken.HasValue || x.LeaseUntil > now))
+                        ChainDeletionPolicy.IsStarted(x.Status, x.AcquisitionToken, x.LeaseUntil, now)))
                     continue;
 
                 if (AfterExplicitTimeTickerDeleteDiscoveryForTestAsync != null)
@@ -4725,7 +4736,7 @@ namespace TickerQ.MongoDB.Infrastructure
                         fb.Eq(x => x.LeaseUntil, snapshot.LeaseUntil),
                         fb.Eq(x => x.UpdatedAt, snapshot.UpdatedAt),
                         fb.Ne(x => x.Status, TickerStatus.InProgress),
-                        fb.Eq(x => x.AcquisitionToken, (Guid?)null),
+                        fb.Or(fb.Eq(x => x.AcquisitionToken, (Guid?)null), fb.Eq(x => x.Status, TickerStatus.Queued)),
                         fb.Or(fb.Eq(x => x.LeaseUntil, (DateTime?)null), fb.Lte(x => x.LeaseUntil, now))));
                     var removed = await _context.TimeTickers.FindOneAndDeleteAsync(
                         session, exact, cancellationToken: cancellationToken).ConfigureAwait(false);

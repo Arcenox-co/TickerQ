@@ -293,8 +293,9 @@ public sealed class AcquiredExecutionQueueCapacityTests
             Assert.Null(scheduler.Accepted);
             foreach (var id in new[] { root.Id, sibling.Id, cancelledChild.Id, leaf.Id })
                 Assert.Equal(TickerStatus.Cancelled, (await provider.GetTimeTickerById(id)).Status);
-            Assert.Null((await provider.GetTimeTickerById(cancelledChild.Id)).ExceptionMessage);
-            Assert.Null((await provider.GetTimeTickerById(leaf.Id)).ExceptionMessage);
+            // The tree's own cancellation must not overwrite the reason they were cancelled with.
+            Assert.Equal(TickerCancellationReasons.PendingRequest, (await provider.GetTimeTickerById(cancelledChild.Id)).ExceptionMessage);
+            Assert.Equal(TickerCancellationReasons.PendingRequest, (await provider.GetTimeTickerById(leaf.Id)).ExceptionMessage);
             Assert.DoesNotContain(Leases(), lease => lease.TickerId == root.Id);
         }
         finally

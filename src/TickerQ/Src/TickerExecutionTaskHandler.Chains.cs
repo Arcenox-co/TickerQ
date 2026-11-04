@@ -40,18 +40,21 @@ internal partial class TickerExecutionTaskHandler
 
     // Only live step tasks own async state, cancellation registrations and retry timers. Waiting
     // branches stay as graph references. Never hold an execution permit while awaiting descendants.
-    private async Task ExecuteTreeAsync(InternalFunctionContext context, bool isDue,
+    private Task ExecuteTreeAsync(InternalFunctionContext context, bool isDue,
         CancellationTokenSource registeredSource, CancellationToken cancellationToken, bool isChild,
         ExecutionMode mode = ExecutionMode.Scheduler)
     {
         context.ChainRootId ??= context.TickerId;
-        if (context.Type == TickerType.CronTickerOccurrence || context.TimeTickerChildren.Count == 0)
-        {
-            await RunChainStepAsync(context, isDue, registeredSource, cancellationToken, isChild, null, mode)
-                .ConfigureAwait(false);
-            return;
-        }
+        // A single step needs no coordinator: hand back its task rather than awaiting it here.
+        return context.Type == TickerType.CronTickerOccurrence || context.TimeTickerChildren.Count == 0
+            ? RunChainStepAsync(context, isDue, registeredSource, cancellationToken, isChild, null, mode)
+            : ExecuteTreeWithChainLeaseAsync(context, isDue, registeredSource, cancellationToken, isChild, mode);
+    }
 
+    private async Task ExecuteTreeWithChainLeaseAsync(InternalFunctionContext context, bool isDue,
+        CancellationTokenSource registeredSource, CancellationToken cancellationToken, bool isChild,
+        ExecutionMode mode)
+    {
         // Descendants keep running after the root's own terminal write, so that write keeps the
         // root's lease as the chain's ownership record until the whole tree has finished.
         var retainsChainLease = mode == ExecutionMode.Scheduler && !isChild && context.ParentId == null;
@@ -71,7 +74,7 @@ internal partial class TickerExecutionTaskHandler
     {
         try
         {
-            await _internalTickerManager.ReleaseChainLeaseAsync(root, CancellationToken.None).ConfigureAwait(false);
+            await _store.ReleaseChainLeaseAsync(root).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -152,10 +155,7 @@ internal partial class TickerExecutionTaskHandler
                     {
                         current.Context.ParentResultEnvelope = mode == ExecutionMode.TestChain
                             ? current.Parent?.Context.ResultEnvelope ?? current.Parent?.Context.ParentResultEnvelope
-                            : await _internalTickerManager.GetParentResultAsync(
-                                    current.Context.ParentId.Value,
-                                    current.Context.Type,
-                                    CancellationToken.None)
+                            : await _store.GetParentResultAsync(current.Context.ParentId.Value, current.Context.Type)
                                 .ConfigureAwait(false);
                     }
                     catch (Exception exception)
@@ -200,8 +200,8 @@ internal partial class TickerExecutionTaskHandler
                         }
 
                         if (skipped != null && mode == ExecutionMode.Scheduler)
-                            await _internalTickerManager.UpdateSkipTimeTickersWithUnifiedContextAsync(
-                                skipped.ToArray(), CancellationToken.None).ConfigureAwait(false);
+                            await _store.UpdateSkipTimeTickersWithUnifiedContextAsync(
+                                skipped.ToArray()).ConfigureAwait(false);
                         else if (skipped != null)
                             MarkTestStepsSkipped(skipped, current.Context.Status,
                                 "Grouped condition was not met.");
@@ -258,7 +258,7 @@ internal partial class TickerExecutionTaskHandler
                     try
                     {
                         if (mode == ExecutionMode.Scheduler)
-                            await _internalTickerManager.UpdateTickerAsync(step.Context, CancellationToken.None)
+                            await _store.UpdateTickerAsync(step.Context)
                                 .ConfigureAwait(false);
                         else
                             _lifecycle?.Committed(step.Context);
@@ -300,8 +300,8 @@ internal partial class TickerExecutionTaskHandler
                             }
                         }
                         if (skipped != null && mode == ExecutionMode.Scheduler)
-                            await _internalTickerManager.UpdateSkipTimeTickersWithUnifiedContextAsync(
-                                skipped.ToArray(), CancellationToken.None).ConfigureAwait(false);
+                            await _store.UpdateSkipTimeTickersWithUnifiedContextAsync(
+                                skipped.ToArray()).ConfigureAwait(false);
                         else if (skipped != null)
                             MarkTestStepsSkipped(skipped, step.Context.Status,
                                 "Condition was not met.");
@@ -340,8 +340,8 @@ internal partial class TickerExecutionTaskHandler
                                 _ => null
                             });
                         if (mode == ExecutionMode.Scheduler)
-                            await _internalTickerManager.UpdateTickerAsync(
-                                step.Context, CancellationToken.None).ConfigureAwait(false);
+                            await _store.UpdateTickerAsync(
+                                step.Context).ConfigureAwait(false);
                         else
                             _lifecycle?.Committed(step.Context);
                     }
@@ -354,7 +354,25 @@ internal partial class TickerExecutionTaskHandler
             ExceptionDispatchInfo.Capture(root.Error).Throw();
     }
 
-    private async Task RunChainStepAsync(InternalFunctionContext context, bool isDue,
+    private Task RunChainStepAsync(InternalFunctionContext context, bool isDue,
+        CancellationTokenSource registeredSource, CancellationToken cancellationToken,
+        bool isChild, Action admitted, ExecutionMode mode)
+    {
+        // The common step — a scheduled root time ticker running its own function — has nothing to
+        // await before or after the function, so it hands back the function's task directly.
+        if (!isChild && mode == ExecutionMode.Scheduler && context.Type == TickerType.TimeTicker &&
+            !context.IsChainRetryPassThrough && !context.IsChainRetryReusedTerminal &&
+            !TickerChainInfrastructure.IsParallelGroup(context.FunctionName))
+        {
+            admitted?.Invoke();
+            return RunContextFunctionAsync(context, isDue, cancellationToken, isChild,
+                preRegisteredSource: registeredSource, mode: mode);
+        }
+
+        return RunChainStepCoreAsync(context, isDue, registeredSource, cancellationToken, isChild, admitted, mode);
+    }
+
+    private async Task RunChainStepCoreAsync(InternalFunctionContext context, bool isDue,
         CancellationTokenSource registeredSource, CancellationToken cancellationToken,
         bool isChild, Action admitted, ExecutionMode mode)
     {
@@ -372,7 +390,7 @@ internal partial class TickerExecutionTaskHandler
             try
             {
                 if (mode == ExecutionMode.Scheduler)
-                    await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None).ConfigureAwait(false);
+                    await _store.UpdateTickerAsync(context).ConfigureAwait(false);
             }
             catch (TickerResultNotAcknowledgedException)
             {
@@ -392,7 +410,7 @@ internal partial class TickerExecutionTaskHandler
         }
 
         if (mode == ExecutionMode.Scheduler && context.Type == TickerType.CronTickerOccurrence &&
-            await _internalTickerManager.TryDispatchCronChainAsync(context, isDue, cancellationToken).ConfigureAwait(false))
+            await _store.TryDispatchCronChainAsync(context, isDue, cancellationToken).ConfigureAwait(false))
         {
             _serviceProvider.GetService<ITickerQHostScheduler>()?.Restart();
             return;

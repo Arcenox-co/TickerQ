@@ -17,7 +17,7 @@ namespace TickerQ.MongoDB.Infrastructure
             InternalFunctionContext ctx, DateTime updatedAt, DateTime? leaseUntil = null)
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         {
-            var props = ctx.GetPropsToUpdate();
+            var props = ctx.TrackedProperties;
             var defs = Builders<TTimeTicker>.Update;
             UpdateDefinition<TTimeTicker> u = null;
 
@@ -89,12 +89,12 @@ namespace TickerQ.MongoDB.Infrastructure
             return u;
         }
 
-        private static bool StampsAcquisitionToken(System.Collections.Generic.HashSet<string> props, InternalFunctionContext ctx)
+        private static bool StampsAcquisitionToken(TrackedPropertySet props, InternalFunctionContext ctx)
             => props.Contains(nameof(InternalFunctionContext.AcquisitionToken)) &&
                props.Contains(nameof(InternalFunctionContext.Status)) &&
                ctx.Status == TickerStatus.InProgress;
 
-        private static bool ClearsAcquisitionToken(System.Collections.Generic.HashSet<string> props, InternalFunctionContext ctx)
+        private static bool ClearsAcquisitionToken(TrackedPropertySet props, InternalFunctionContext ctx)
             => (props.Contains(nameof(InternalFunctionContext.Status)) &&
                 ctx.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                     or TickerStatus.Cancelled or TickerStatus.Skipped)
@@ -104,7 +104,7 @@ namespace TickerQ.MongoDB.Infrastructure
             InternalFunctionContext ctx, DateTime updatedAt, DateTime? leaseUntil = null)
             where TCronTicker : CronTickerEntity, new()
         {
-            var props = ctx.GetPropsToUpdate();
+            var props = ctx.TrackedProperties;
             var defs = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update;
             UpdateDefinition<CronTickerOccurrenceEntity<TCronTicker>> u = null;
 

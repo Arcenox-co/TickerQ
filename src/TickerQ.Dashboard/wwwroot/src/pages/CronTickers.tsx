@@ -412,7 +412,7 @@ export default function CronTickersPage() {
   const toolbar = (
     <div className="space-y-2">
       <div className="flex items-center gap-2 flex-wrap">
-        <SearchInput value={search} onChange={setSearch} placeholder="Search by function…" />
+        <SearchInput value={search} onChange={setSearch} placeholder="Search by function or ID…" />
         <FilterPopover
           statusLabel="Last trigger status"
           statusFilter={statusFilter}

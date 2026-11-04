@@ -15,7 +15,45 @@ namespace TickerQ.Utilities.Models
         // Compiled setter cache to avoid reflection on every SetProperty call
         private static readonly ConcurrentDictionary<string, (Action<InternalFunctionContext, object> Setter, string Name)> SetterCache = new();
 
-        public HashSet<string> ParametersToUpdate { get; set; } = [];
+        // Tracked writes are a bit mask until someone asks for the set: most contexts track a
+        // handful of known properties and never need the HashSet (~400 B) at all.
+        private HashSet<string> _parametersToUpdate;
+        private int _trackedProperties;
+
+        /// <summary>
+        /// The properties this context's next persistence write carries. Reading it materializes the
+        /// set; from then on it is the authoritative store, so callers may mutate it as before.
+        /// </summary>
+        public HashSet<string> ParametersToUpdate
+        {
+            get
+            {
+                if (_parametersToUpdate == null)
+                {
+                    // Publish the set before clearing the bits: a concurrent reader sees one or the other.
+                    _parametersToUpdate = MaterializeTrackedProperties();
+                    _trackedProperties = 0;
+                }
+                return _parametersToUpdate;
+            }
+            set
+            {
+                _parametersToUpdate = value;
+                _trackedProperties = 0;
+            }
+        }
+
+        /// <summary>Allocation-free view of the tracked properties for persistence providers.</summary>
+        internal TrackedPropertySet TrackedProperties => new(this);
+
+        /// <summary>Whether the next persistence write carries <paramref name="name"/>.</summary>
+        internal bool IsPropertyTracked(string name)
+        {
+            if (_parametersToUpdate != null)
+                return _parametersToUpdate.Contains(name);
+            var bit = TrackedPropertyBit(name);
+            return bit != 0 && (_trackedProperties & bit) != 0;
+        }
         // Cached function delegate and priority for performance optimization
         // Eliminates dictionary lookups during execution
         [JsonIgnore]
@@ -193,15 +231,51 @@ namespace TickerQ.Utilities.Models
 
         private InternalFunctionContext TrackProperty(string name)
         {
-            (ParametersToUpdate ??= []).Add(name);
+            var bit = TrackedPropertyBit(name);
+            if (_parametersToUpdate == null && bit != 0)
+                _trackedProperties |= bit;
+            else
+                ParametersToUpdate.Add(name);
             return this;
+        }
+
+        private static readonly string[] TrackedPropertyNames =
+        [
+            nameof(Status), nameof(ExecutedAt), nameof(ElapsedTime), nameof(ExceptionDetails),
+            nameof(ResultEnvelope), nameof(RetryCount), nameof(ReleaseLock), nameof(ExecutionTime),
+            nameof(ProgressPercent), nameof(ProgressMessage), nameof(ProgressUpdatedAt), nameof(AcquisitionToken),
+        ];
+
+        // Bit i is TrackedPropertyNames[i]; any other name falls back to the set.
+        private static int TrackedPropertyBit(string name) => name switch
+        {
+            nameof(Status) => 1 << 0,
+            nameof(ExecutedAt) => 1 << 1,
+            nameof(ElapsedTime) => 1 << 2,
+            nameof(ExceptionDetails) => 1 << 3,
+            nameof(ResultEnvelope) => 1 << 4,
+            nameof(RetryCount) => 1 << 5,
+            nameof(ReleaseLock) => 1 << 6,
+            nameof(ExecutionTime) => 1 << 7,
+            nameof(ProgressPercent) => 1 << 8,
+            nameof(ProgressMessage) => 1 << 9,
+            nameof(ProgressUpdatedAt) => 1 << 10,
+            nameof(AcquisitionToken) => 1 << 11,
+            _ => 0
+        };
+
+        private HashSet<string> MaterializeTrackedProperties()
+        {
+            var tracked = _trackedProperties;
+            var set = new HashSet<string>();
+            for (var i = 0; tracked != 0; i++, tracked >>= 1)
+                if ((tracked & 1) != 0) set.Add(TrackedPropertyNames[i]);
+            return set;
         }
 
         [DynamicDependency(DynamicallyAccessedMemberTypes.PublicProperties, typeof(InternalFunctionContext))]
         public InternalFunctionContext SetProperty<T>(Expression<Func<InternalFunctionContext, T>> property, T value)
         {
-            ParametersToUpdate ??= [];
-
             if (property.Body is not MemberExpression { Member: PropertyInfo prop })
                 throw new ArgumentException("Expression must point to a property", nameof(property));
 
@@ -217,18 +291,28 @@ namespace TickerQ.Utilities.Models
             });
 
             cached.Setter(this, value);
-            ParametersToUpdate.Add(cached.Name);
-
-            return this;
+            return TrackProperty(cached.Name);
         }
 
         public InternalFunctionContext ResetUpdateProps()
         {
-             ParametersToUpdate.Clear();
-             return this;
+            _trackedProperties = 0;
+            _parametersToUpdate?.Clear();
+            return this;
         }
 
         public HashSet<string> GetPropsToUpdate()
             => ParametersToUpdate;
+    }
+
+    /// <summary>
+    /// A read-only, allocation-free view of <see cref="InternalFunctionContext"/>'s tracked
+    /// properties, with the <c>Contains</c> shape the providers' update builders already use.
+    /// </summary>
+    internal readonly struct TrackedPropertySet
+    {
+        private readonly InternalFunctionContext _context;
+        internal TrackedPropertySet(InternalFunctionContext context) => _context = context;
+        public bool Contains(string name) => _context.IsPropertyTracked(name);
     }
 }

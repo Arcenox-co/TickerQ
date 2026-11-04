@@ -99,14 +99,29 @@ internal partial class TickerManager<TTimeTicker, TCronTicker>
                 .ConfigureAwait(false);
             return accepted
                 ? new TickerResult<CronTickerOccurrenceEntity<TCronTicker>>(occurrence, 1)
-                : new TickerResult<CronTickerOccurrenceEntity<TCronTicker>>(
-                    new TickerValidatorException(
-                        "The cron occurrence is already active, belongs to a chain, or could not be acquired."));
+                : new TickerResult<CronTickerOccurrenceEntity<TCronTicker>>(new TickerValidatorException(
+                    await RerunRefusalAsync(occurrence, cancellationToken).ConfigureAwait(false)));
         }
         catch (Exception exception)
         {
             return new TickerResult<CronTickerOccurrenceEntity<TCronTicker>>(exception);
         }
+    }
+
+    // The store refuses a rerun without saying why; read enough to tell the caller which rule applied.
+    private async Task<string> RerunRefusalAsync(
+        CronTickerOccurrenceEntity<TCronTicker> occurrence, CancellationToken cancellationToken)
+    {
+        var cron = await _persistenceProvider.GetCronTickerById(occurrence.CronTickerId, cancellationToken)
+            .ConfigureAwait(false);
+        if (cron == null)
+            return "The cron ticker this occurrence belongs to no longer exists.";
+        if (cron.DefinitionRevision != occurrence.DefinitionRevision)
+            return "This occurrence ran under an earlier version of its cron ticker, so it cannot be rerun. " +
+                   "Run the cron ticker instead.";
+        if (occurrence.Status is TickerStatus.Idle or TickerStatus.Queued or TickerStatus.InProgress)
+            return "The cron occurrence is already pending or running.";
+        return "The cron occurrence could not be acquired for a rerun. Refresh it and try again.";
     }
 
     Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.RequestCancellationAsync(Guid id, CancellationToken cancellationToken)
@@ -152,7 +167,11 @@ internal partial class TickerManager<TTimeTicker, TCronTicker>
                 }, cancellationToken).ConfigureAwait(false);
             }
         }
-        if (signalled) await NotifyAsync(() => _notificationHubSender.CanceledTickerNotifyAsync(id)).ConfigureAwait(false);
+        if (signalled)
+        {
+            _logger.LogInformation("Cancellation of running {TickerType} {TickerId} was requested", type, id);
+            await NotifyAsync(() => _notificationHubSender.CanceledTickerNotifyAsync(id)).ConfigureAwait(false);
+        }
         return new TickerResult<TEntity>(signalled ? 1 : 0);
     }
 

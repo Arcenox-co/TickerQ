@@ -2440,6 +2440,91 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task TransitionQueuedTimeTickers_BindsLeasesAsParameters_AndKeepsExactWinnersAcrossPaddedBatches()
+    {
+        var commands = new SqlCapture();
+        var options = new DbContextOptionsBuilder<TestTickerQDbContext>()
+            .UseSqlite(_connection).AddInterceptors(commands).Options;
+        using var services = new ServiceCollection()
+            .AddSingleton<IDbContextFactory<TestTickerQDbContext>>(new PooledDbContextFactory<TestTickerQDbContext>(options))
+            .BuildServiceProvider();
+        var schedulerOptions = new SchedulerOptionsBuilder { NodeIdentifier = LogicalNodeId };
+        var owner = schedulerOptions.ExecutionOwnerId; // each options instance owns its own nonce
+        var provider = new TestableProvider(services, _clock, schedulerOptions, _redisContext);
+
+        async Task<(Guid[] Winners, Guid[] Expected, string[] Sql, Guid[] Ids)> TransitionBatchAsync()
+        {
+            var rows = Enumerable.Range(0, 3).Select(_ =>
+            {
+                var row = CreateTimeTicker(status: TickerStatus.Queued, lockHolder: owner,
+                    lockedAt: _fixedNow.AddSeconds(-1));
+                row.AcquisitionToken = Guid.NewGuid();
+                return row;
+            }).ToArray();
+            await SeedTimeTickers(rows);
+            commands.Clear();
+            // Three leases pad to four slots; the middle lease names a stale generation.
+            var winners = await provider.TransitionQueuedTimeTickersToInProgressAsync(
+            [
+                new AcquisitionLease(rows[0].Id, rows[0].AcquisitionToken),
+                new AcquisitionLease(rows[1].Id, Guid.NewGuid()),
+                new AcquisitionLease(rows[2].Id, rows[2].AcquisitionToken)
+            ], CancellationToken.None);
+            return (winners, [rows[0].Id, rows[2].Id], commands.Texts(), rows.Select(x => x.Id).ToArray());
+        }
+
+        var first = await TransitionBatchAsync();
+        var second = await TransitionBatchAsync();
+
+        foreach (var batch in new[] { first, second })
+        {
+            Assert.Equal(batch.Expected.OrderBy(x => x), batch.Winners.OrderBy(x => x));
+            using var verify = CreateVerifyContext();
+            var stale = await verify.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == batch.Ids[1]);
+            Assert.Equal(TickerStatus.Queued, stale.Status);
+            foreach (var sql in batch.Sql)
+            foreach (var id in batch.Ids)
+                Assert.DoesNotContain(id.ToString("D"), sql, StringComparison.OrdinalIgnoreCase);
+        }
+        Assert.NotEmpty(first.Sql);
+        Assert.Equal(first.Sql, second.Sql);
+    }
+
+    private sealed class SqlCapture : Microsoft.EntityFrameworkCore.Diagnostics.DbCommandInterceptor
+    {
+        private readonly List<string> _texts = [];
+
+        public void Clear() { lock (_texts) _texts.Clear(); }
+
+        public string[] Texts()
+        {
+            lock (_texts)
+                return _texts.Where(x => x.Contains("\"TimeTickers\"", StringComparison.Ordinal) &&
+                                         x.Contains("\"AcquisitionToken\"", StringComparison.Ordinal)).ToArray();
+        }
+
+        private void Add(System.Data.Common.DbCommand command) { lock (_texts) _texts.Add(command.CommandText); }
+
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader>>
+            ReaderExecutingAsync(System.Data.Common.DbCommand command,
+                Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+                Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader> result,
+                CancellationToken cancellationToken = default)
+        {
+            Add(command);
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> NonQueryExecutingAsync(
+            System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            Add(command);
+            return base.NonQueryExecutingAsync(command, eventData, result, cancellationToken);
+        }
+    }
+
+    [Fact]
     public async Task TransitionQueuedTimeTicker_RejectsStaleGenerationAndReturnsOnlyExactWinner()
     {
         var currentToken = Guid.NewGuid();
