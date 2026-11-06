@@ -682,12 +682,27 @@ namespace TickerQ.Provider
             var successful = functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
             cancellationToken.ThrowIfCancellationRequested();
             // A static callback with explicit state: every terminal commit would otherwise allocate a closure.
-            return Task.FromResult(WriteGraph(
-                (Provider: this, Context: functionContext, EnforceRemoteChildToken: enforceRemoteChildToken,
-                    Successful: successful, Token: cancellationToken),
-                static state => state.Provider.CommitTerminalTickerLocked(
-                    state.Context, state.EnforceRemoteChildToken, state.Successful, state.Token)));
+            var state = (Provider: this, Context: functionContext, EnforceRemoteChildToken: enforceRemoteChildToken,
+                Successful: successful, Token: cancellationToken);
+            // A commit that writes no result replaces one row by compare-and-swap and changes no graph
+            // structure, so it takes the shared lock, as other single-row replacements do: commits then
+            // neither queue behind each other nor behind a scheduler scan. Every structural or unconditional
+            // write still holds the exclusive lock and so never overlaps one. A commit that publishes or
+            // clears a result keeps the exclusive lock, so a reader never sees Done without its result.
+            return Task.FromResult(WritesCommittedResult(functionContext, successful)
+                ? WriteGraph(state, static s => s.Provider.CommitTerminalTickerLocked(
+                    s.Context, s.EnforceRemoteChildToken, s.Successful, s.Token))
+                : WriteRow(state, static s => s.Provider.CommitTerminalTickerLocked(
+                    s.Context, s.EnforceRemoteChildToken, s.Successful, s.Token)));
         }
+
+        // Whether committing this outcome changes the stored result: a successful commit publishes its
+        // result or clears one stored earlier. No other commit touches results.
+        private bool WritesCommittedResult(InternalFunctionContext functionContext, bool successful)
+            => successful &&
+               (functionContext.ResultEnvelope != null ||
+                (functionContext.Type == TickerType.CronTickerOccurrence ? CronOccurrenceResults : TimeTickerResults)
+                .ContainsKey(functionContext.TickerId));
 
         // CommitTerminalTickerCoreAsync's write, run under the graph write lock.
         private bool CommitTerminalTickerLocked(
@@ -1705,6 +1720,24 @@ namespace TickerQ.Provider
         // Runs a structural graph mutation under the exclusive write lock.
         private T WriteGraph<T>(Func<T> write)
             => WriteGraph(write, static callback => callback());
+
+        // A single-row compare-and-swap write under the shared lock: excluded from every structural write
+        // and from legacy adoption exactly as WriteGraph is, but not from readers or other row writes.
+        private T WriteRow<TState, T>(TState state, Func<TState, T> write)
+        {
+            GraphLock.EnterReadLock();
+            try
+            {
+                if (IsLegacyAdoptionFenced())
+                    throw new InvalidOperationException(
+                        "Legacy runtime state is fenced by runtime partition adoption.");
+                return write(state);
+            }
+            finally
+            {
+                GraphLock.ExitReadLock();
+            }
+        }
 
         // The same, with explicit state so a hot path can pass a static callback and allocate no closure.
         private T WriteGraph<TState, T>(TState state, Func<TState, T> write)

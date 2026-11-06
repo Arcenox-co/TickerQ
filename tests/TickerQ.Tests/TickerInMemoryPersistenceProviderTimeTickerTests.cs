@@ -2161,4 +2161,80 @@ public class TickerInMemoryPersistenceProviderTimeTickerTests : IAsyncLifetime
     }
 
     #endregion
+
+    #region Terminal commit locking
+
+    private InternalFunctionContext TerminalContext(Guid id, TimeTickerEntity lease, TickerStatus status,
+        TickerResultEnvelope? result = null)
+    {
+        var context = new InternalFunctionContext()
+            .SetProperty(x => x.TickerId, id)
+            .SetProperty(x => x.Type, TickerType.TimeTicker)
+            .SetProperty(x => x.ChainRootId, id)
+            .SetProperty(x => x.ChainGeneration, lease.ChainGeneration)
+            .SetProperty(x => x.AcquisitionToken, lease.AcquisitionToken)
+            .SetProperty(x => x.Status, status);
+        // As the handler does: a successful commit always states its result, even when it has none.
+        if (status is TickerStatus.Done or TickerStatus.DueDone) context.SetProperty(x => x.ResultEnvelope, result);
+        return context;
+    }
+
+    [Fact]
+    public async Task TerminalCommitWithoutResult_WaitsForAStructuralWrite()
+    {
+        var oldRoot = CreateTicker(function: "OldRoot");
+        await InsertAndTrack(oldRoot);
+        var job = CreateTicker(function: "Job");
+        await InsertAndTrack(job);
+        var lease = await _provider.AcquireTimeTickerOnDemandAsync(job.Id, _now, CancellationToken.None);
+        var newRoot = CreateTicker(function: "NewRoot");
+        _createdTimeTickerIds.Add(newRoot.Id);
+
+        Task<bool>? commit = null;
+        bool? completedMidWrite = null;
+        // The seam runs while the replacement holds the exclusive lock. A commit that writes no result takes
+        // the shared lock: it must still wait for the structural write rather than run inside it.
+        TickerInMemoryPersistenceProvider<FakeTimeTicker, FakeCronTicker>.GraphReplacementMidpointHook = () =>
+        {
+            commit = Task.Run(() => _provider.CommitTerminalTickerAsync(
+                TerminalContext(job.Id, lease, TickerStatus.Failed), CancellationToken.None));
+            completedMidWrite = commit.Wait(TimeSpan.FromMilliseconds(500));
+        };
+        try
+        {
+            await _provider.ReplaceTimeTickerChainAsync(oldRoot.Id, newRoot, CancellationToken.None);
+        }
+        finally
+        {
+            TickerInMemoryPersistenceProvider<FakeTimeTicker, FakeCronTicker>.GraphReplacementMidpointHook = null;
+        }
+
+        Assert.False(completedMidWrite);
+        Assert.True(await commit!);
+        Assert.Equal(TickerStatus.Failed, (await _provider.GetTimeTickerById(job.Id, CancellationToken.None)).Status);
+    }
+
+    [Fact]
+    public async Task SuccessfulCommit_PublishesItsResultWithTheStatus_AndALaterSuccessWithoutOneClearsIt()
+    {
+        var job = CreateTicker(function: "Job");
+        await InsertAndTrack(job);
+        var result = new TickerResultEnvelope([7], TickerResultEnvelope.CurrentVersion, "application/json");
+
+        var runA = await _provider.AcquireTimeTickerOnDemandAsync(job.Id, _now, CancellationToken.None);
+        Assert.True(await _provider.CommitTerminalTickerAsync(
+            TerminalContext(job.Id, runA, TickerStatus.Done, result), CancellationToken.None));
+        Assert.Equal(TickerStatus.Done, (await _provider.GetTimeTickerById(job.Id, CancellationToken.None)).Status);
+        Assert.Equal(result.Payload.ToArray(),
+            (await _provider.GetTimeTickerResultAsync(job.Id, CancellationToken.None)).Payload.ToArray());
+
+        // A rerun that succeeds without a result clears the one stored by the earlier run.
+        var runB = await _provider.AcquireTimeTickerOnDemandAsync(job.Id, _now, CancellationToken.None);
+        Assert.True(await _provider.CommitTerminalTickerAsync(
+            TerminalContext(job.Id, runB, TickerStatus.Done), CancellationToken.None));
+        Assert.Equal(TickerStatus.Done, (await _provider.GetTimeTickerById(job.Id, CancellationToken.None)).Status);
+        Assert.Null(await _provider.GetTimeTickerResultAsync(job.Id, CancellationToken.None));
+    }
+
+    #endregion
 }
