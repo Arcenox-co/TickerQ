@@ -109,6 +109,13 @@ The verified Native AOT lanes cover:
   integration event path without sending an outbound webhook; and
 - OpenTelemetry enqueue, execute, and completion activities.
 
+[Promises](promises.md) compile without trimming or AOT warnings, and the native dashboard lane
+serves their list route. A promise reads its rows through the application's `IQueryable`, so it
+works natively only when that query provider does: EF Core and MongoDB are managed-only (below),
+and LINQ to objects through `AsQueryable()` is marked `RequiresUnreferencedCode` and
+`RequiresDynamicCode`. Each promise's `matchBy` is compiled once; native applications run it
+through the expression interpreter.
+
 The AI assistant remains unavailable in Native AOT because its runtime tool discovery is
 dynamic. `AddAssistant` fails clearly during configuration in a native application.
 

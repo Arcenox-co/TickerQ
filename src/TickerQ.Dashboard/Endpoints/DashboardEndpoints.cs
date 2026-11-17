@@ -163,6 +163,7 @@ public static class DashboardEndpoints
         }
 
         d.MapIntegrations(w, config);
+        d.MapPromises(w, config);
 
         w.MapPostAot("/host/start", StartHost<TTimeTicker, TCronTicker>);
         w.MapPostAot("/host/stop", StopHost<TTimeTicker, TCronTicker>);
@@ -1846,7 +1847,8 @@ public static class DashboardEndpoints
         SavedTickerDefinitionTarget? target = Enum.TryParse<SavedTickerDefinitionTarget>(
             c.Request.Query["target"], true, out var parsedTarget) ? parsedTarget : null;
         var rows = await store.ListDefinitionsAsync(kind, target, c.RequestAborted).ConfigureAwait(false);
-        await WriteJson(c, rows.Select(row => ToDefinitionResponse(row, c)).ToList(), Json(c));
+        await WriteJson(c, rows.Where(row => row.Kind != SavedTickerDefinitionKind.Promise)
+            .Select(row => ToDefinitionResponse(row, c)).ToList(), Json(c));
     }
 
     private static async Task GetDefinition<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
@@ -1855,7 +1857,7 @@ public static class DashboardEndpoints
     {
         if (!TryGetDefinitionStore<TTimeTicker, TCronTicker>(c, out var store)) return;
         var row = await store.GetDefinitionAsync(id, c.RequestAborted).ConfigureAwait(false);
-        if (row == null) { c.Response.StatusCode = StatusCodes.Status404NotFound; return; }
+        if (row == null || row.Kind == SavedTickerDefinitionKind.Promise) { c.Response.StatusCode = StatusCodes.Status404NotFound; return; }
         await WriteJson(c, ToDefinitionResponse(row, c), Json(c));
     }
 
@@ -1911,6 +1913,7 @@ public static class DashboardEndpoints
             return;
         }
         if (!TryGetDefinitionStore<TTimeTicker, TCronTicker>(c, out var store)) return;
+        if (await IsPromiseRowAsync(c, store, id).ConfigureAwait(false)) return;
         if (!await EnsureTemplateNameAvailableAsync(
                 c, store, body.Kind, body.Target, body.Name, id).ConfigureAwait(false)) return;
         var row = new SavedTickerDefinition
@@ -1931,8 +1934,7 @@ public static class DashboardEndpoints
         }
         if (updated == null)
         {
-            c.Response.StatusCode = StatusCodes.Status409Conflict;
-            await WriteJson(c, new ErrorResponseBody { Error = "This definition changed in another session. Refresh it before saving again." }, Json(c));
+            await WriteDefinitionGoneOrChangedAsync(c, store, id).ConfigureAwait(false);
             return;
         }
         await WriteJson(c, ToDefinitionResponse(updated, c), Json(c));
@@ -1949,8 +1951,11 @@ public static class DashboardEndpoints
             return;
         }
         if (!TryGetDefinitionStore<TTimeTicker, TCronTicker>(c, out var store)) return;
-        c.Response.StatusCode = await store.DeleteDefinitionAsync(id, version, c.RequestAborted).ConfigureAwait(false)
-            ? StatusCodes.Status204NoContent : StatusCodes.Status409Conflict;
+        if (await IsPromiseRowAsync(c, store, id).ConfigureAwait(false)) return;
+        if (await store.DeleteDefinitionAsync(id, version, c.RequestAborted).ConfigureAwait(false))
+            c.Response.StatusCode = StatusCodes.Status204NoContent;
+        else
+            await WriteDefinitionGoneOrChangedAsync(c, store, id).ConfigureAwait(false);
     }
 
     private static async Task CreateDefinitionFromTimeTicker<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
@@ -2086,7 +2091,7 @@ public static class DashboardEndpoints
         if (!TryGetDefinitionStore<TTimeTicker, TCronTicker>(c, out var store)) return;
         var persistence = c.RequestServices.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>();
         var row = await store.GetDefinitionAsync(id, c.RequestAborted).ConfigureAwait(false);
-        if (row == null) { c.Response.StatusCode = StatusCodes.Status404NotFound; return; }
+        if (row == null || row.Kind == SavedTickerDefinitionKind.Promise) { c.Response.StatusCode = StatusCodes.Status404NotFound; return; }
         if (row.Kind != SavedTickerDefinitionKind.Draft || row.Target != SavedTickerDefinitionTarget.TimeTicker)
         {
             c.Response.StatusCode = StatusCodes.Status409Conflict;
@@ -2197,9 +2202,32 @@ public static class DashboardEndpoints
         else if (body.Kind == SavedTickerDefinitionKind.Template &&
                  body.Payload.Root.Children is not { Count: > 0 })
             error = "Templates are available only for chains with at least two jobs.";
+        else if (body.Kind is not (SavedTickerDefinitionKind.Template or SavedTickerDefinitionKind.Draft))
+            error = "Only templates and drafts can be saved here.";
         else if (body.Kind == SavedTickerDefinitionKind.Draft && body.Target != SavedTickerDefinitionTarget.TimeTicker)
             error = "Drafts are supported only for time tickers. Save a cron configuration as a template instead.";
         return error == null;
+    }
+
+    // Promise rows share the definitions store but belong to the Promises page; here they do not exist.
+    // A write at a version that the store declined: the definition is gone (404) or someone else changed it (409).
+    private static async Task WriteDefinitionGoneOrChangedAsync(HttpContext c, ITickerDefinitionStore store, Guid id)
+    {
+        if (await store.GetDefinitionAsync(id, c.RequestAborted).ConfigureAwait(false) == null)
+        {
+            c.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+        c.Response.StatusCode = StatusCodes.Status409Conflict;
+        await WriteJson(c, new ErrorResponseBody { Error = "This definition changed in another session. Refresh it before saving again." }, Json(c));
+    }
+
+    private static async Task<bool> IsPromiseRowAsync(HttpContext c, ITickerDefinitionStore store, Guid id)
+    {
+        var existing = await store.GetDefinitionAsync(id, c.RequestAborted).ConfigureAwait(false);
+        if (existing?.Kind != SavedTickerDefinitionKind.Promise) return false;
+        c.Response.StatusCode = StatusCodes.Status404NotFound;
+        return true;
     }
 
     private static async Task<bool> EnsureTemplateNameAvailableAsync(HttpContext c, ITickerDefinitionStore store,

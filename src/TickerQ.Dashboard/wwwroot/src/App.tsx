@@ -9,6 +9,7 @@ import { useAuth } from "@/lib/auth/auth-context";
 import { RouteLoading } from "@/components/layout/RouteLoading";
 
 const OverviewPage = lazy(() => import("@/pages/Overview"));
+const PromisesPage = lazy(() => import("@/pages/Promises"));
 const ExecutionsPage = lazy(() => import("@/pages/Executions"));
 const TimeTickersPage = lazy(() => import("@/pages/TimeTickers"));
 const CronTickersPage = lazy(() => import("@/pages/CronTickers"));
@@ -49,6 +50,7 @@ export default function App() {
           <Route path="time-tickers/:id/flowchart" element={<ChainFlowchartPage />} />
           <Route path="cron-tickers" element={<CronTickersPage />} />
           <Route path="schedule-policies" element={<SchedulePoliciesPage />} />
+          <Route path="promises" element={<PromisesPage />} />
           <Route path="cron-tickers/new-chain" element={<ChainBuilderPage />} />
           <Route path="cron-tickers/:id" element={<CronTickerDetailPage />} />
           <Route path="cron-tickers/:id/occurrences/:occurrenceId/flowchart" element={<CronOccurrenceChainPage />} />

@@ -24,6 +24,7 @@ public static class TickerProviderModelConventions
         {
             ApplyOracleBooleanColumns(modelBuilder);
             ApplyOracleSeedKeyIndex(modelBuilder);
+            ApplyOracleLargeTextColumns(modelBuilder);
         }
         Compat.PrimitiveCollectionCompat.Apply(modelBuilder, providerName, IsTickerQEntity);
         if (providerName?.Contains("MySql", StringComparison.OrdinalIgnoreCase) == true ||
@@ -59,6 +60,15 @@ public static class TickerProviderModelConventions
         foreach (var property in entity.GetDeclaredProperties()
                      .Where(p => p.ClrType == typeof(bool) || p.ClrType == typeof(bool?)))
             property.SetColumnType("NUMBER(1)");
+    }
+
+    // The Oracle provider maps an unbounded string to NVARCHAR2(2000). Promise state can hold 200 findings, so its
+    // column must be a large object; NCLOB keeps the rest of the model as it is.
+    private static void ApplyOracleLargeTextColumns(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Model.FindEntityType(typeof(Entities.TickerQPromiseEntity))
+            ?.FindProperty(nameof(Entities.TickerQPromiseEntity.StateJson))
+            ?.SetColumnType("NCLOB");
     }
 
     private static bool IsTickerQEntity(Type type)

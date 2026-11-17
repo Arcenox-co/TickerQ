@@ -136,6 +136,31 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
     public ITickerQueryable<TTimeTicker> TimeTickersMonitoringQuery()
         => new RedisTickerQueryable<TTimeTicker>((_, ct) => ScanMonitoringQueryAsync(ct));
 
+    // The change set holds every root by the time it was last written, so a promise check reads only recent aggregates.
+    public bool SupportsPromiseChangeFeed => true;
+
+    public async Task<TTimeTicker[]> ReadTimeTickersChangedSinceAsync(string function, DateTime since, int take,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!await IsActivationPublicationVisibleAsync(cancellationToken).ConfigureAwait(false)) return [];
+        var members = await Db.SortedSetRangeByScoreAsync(TimeTickerChangesKey, ToScore(since), double.PositiveInfinity, take: take + 1)
+            .ConfigureAwait(false);
+        var ids = ParseGuidSet(members).ToArray();
+        if (ids.Length > take) return null;
+        cancellationToken.ThrowIfCancellationRequested();
+        var roots = await Serializer.LoadByIdsAsync<TTimeTicker>(ids, TimeTickerKey, cancellationToken).ConfigureAwait(false);
+        return roots.SelectMany(EnumerateAggregate).Where(job => job.Function == function && job.OriginCronTickerId == null).ToArray();
+    }
+
+    public async Task<TTimeTicker[]> ReadTimeTickerAggregatesAsync(Guid[] rootIds, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (rootIds.Length == 0 || !await IsActivationPublicationVisibleAsync(cancellationToken).ConfigureAwait(false)) return [];
+        var roots = await Serializer.LoadByIdsAsync<TTimeTicker>(rootIds, TimeTickerKey, cancellationToken).ConfigureAwait(false);
+        return roots.SelectMany(EnumerateAggregate).ToArray();
+    }
+
     public ITickerQueryable<TCronTicker> CronTickersQuery()
         => new RedisTickerQueryable<TCronTicker>((predicates, ct) =>
             ScanQueryAsync(CronIdsKey, CronKey, predicates, ct));
@@ -338,6 +363,7 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
                     RuntimeAdmissionMode, rootId.Value.ToString(), pendingScore, retentionIndex, retentionScore }).ConfigureAwait(false);
             if ((long)result != 1) continue;
             if (cluster) await IndexManager.AddTimeTickerIndexesAsync(replacement).ConfigureAwait(false);
+            else await IndexManager.MarkTimeTickerChangedAsync(replacement.Id).ConfigureAwait(false);
             updated++;
         }
         return updated;
@@ -576,6 +602,7 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
                 (RedisValue)$"{(int)TickerType.TimeTicker}:{entityId:D}"));
             var removed = (long)await Db.ScriptEvaluateAsync(
                 DeleteTimeTickerScript, keys.ToArray(), arguments.ToArray()).ConfigureAwait(false);
+            if (removed == 1) await IndexManager.ForgetTimeTickerChangeAsync(id).ConfigureAwait(false);
             if (removed != -2) return removed == 1;
         }
         throw new InvalidOperationException("The ticker kept changing during deletion. Retry the delete.");

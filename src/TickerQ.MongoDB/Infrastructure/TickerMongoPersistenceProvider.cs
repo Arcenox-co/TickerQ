@@ -3480,6 +3480,9 @@ namespace TickerQ.MongoDB.Infrastructure
         // MongoDB fully implements lease renewal and the stale-job watchdog below.
         public bool SupportsLeaseBasedRecovery => true;
 
+        // Status and ExecutedAt filters are served by the time-ticker indexes, by parent for finished jobs.
+        public bool SupportsPromiseDeltaReads => true;
+
         public async Task<int> RenewTimeTickerLeases(Guid[] timeTickerIds, DateTime leaseUntil, CancellationToken cancellationToken = default)
         {
             if (timeTickerIds == null || timeTickerIds.Length == 0) return 0;

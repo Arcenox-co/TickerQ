@@ -84,6 +84,12 @@ try
           providersBody.Contains("Smoke holidays", StringComparison.Ordinal),
         $"Native schedule-date-provider endpoint returned {(int)providersResponse.StatusCode}: {providersBody}");
 
+    // No promise is declared, so the list is empty; it still goes through the generated promise contract.
+    using var promisesResponse = await client.GetAsync("/tickerq/dashboard/api/dashboard/promises");
+    var promisesBody = await promisesResponse.Content.ReadAsStringAsync();
+    Check(promisesResponse.IsSuccessStatusCode && promisesBody.Trim() == "[]",
+        $"Native promises endpoint returned {(int)promisesResponse.StatusCode}: {promisesBody}");
+
     using var blockedWrite = await client.PostAsync("/tickerq/dashboard/api/dashboard/host/start", content: null);
     Check(blockedWrite.StatusCode == System.Net.HttpStatusCode.Forbidden,
         $"Missing-license dashboard mutation returned {(int)blockedWrite.StatusCode} instead of 403.");

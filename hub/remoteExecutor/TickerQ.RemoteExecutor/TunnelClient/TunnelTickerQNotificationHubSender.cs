@@ -125,6 +125,9 @@ internal sealed class TunnelTickerQNotificationHubSender : ITickerQNotificationH
     public Task UpdateTimeTickerNotifyAsync(Guid id)
         => Push("time_ticker.updated", "time-tickers", new { id });
 
+    public Task PromisesChangedAsync()
+        => Push("promises.changed", "promises", null);
+
     public Task RemoveTimeTickerNotifyAsync(Guid id)
         => Push("time_ticker.removed", "time-tickers", new { id });
 

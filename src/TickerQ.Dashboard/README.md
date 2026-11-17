@@ -257,8 +257,8 @@ but retain their state only in the bounded test-run registry used by the current
 They do not create a time ticker, cron ticker, or cron occurrence. Use **Run now** when durable
 execution history is required.
 
-EF Core deployments must add the `TickerQDefinitions` table from the current model before starting
-the upgraded runtime. MongoDB provisions its collection/index, Redis uses partition-scoped keys,
+EF Core deployments must add the `TickerQDefinitions` table (and, for promises, `TickerQPromises`)
+from the current model before starting the upgraded runtime. MongoDB provisions its collection/index, Redis uses partition-scoped keys,
 and the in-memory provider retains saved definitions only for the lifetime of the process. See the
 [store upgrade guide](../../docs/upgrading-cron-time-tickers.md#add-saved-templates-and-drafts).
 
@@ -279,6 +279,36 @@ See [chain deletion behavior and storage upgrades](../../docs/chain-deletion.md)
 Cron Tickers supports **Create recurring chain** and **Add chain / Edit chain** on an existing schedule. Every trigger creates an independent execution graph; its row offers **View chain** for job statuses and logs. Choose whether overlapping chains are allowed or the new trigger is skipped while a prior chain has unfinished jobs. See [recurring chain setup, storage upgrades and execution semantics](../../docs/recurring-chains.md).
 
 Cron create/edit forms expose **Skip if already running** per schedule. See [cron overlap policy](../../docs/cron-overlap.md) for runtime scope and migration requirements.
+
+## Promises
+
+The **Promises** page appears when the application declares promises in code
+(`MapTicker<TFunction, TRequest>().Promise(...)` or `options.ConfigurePromises(...)`): every row
+of a query should get a successful job of a function within a time limit. Each promise shows
+its latest stored check (how many rows are done, running, failed or need review) and the rows
+whose work was missed: **Never scheduled**, **Never ran** or **Job ran, row not updated**, and the rows
+whose job ran or will run twice: **Ran twice** or **Will run twice**. Findings are grouped by kind;
+each group says once what happened and what to do, and each row adds its own detail and its job.
+A row's button says what it does after checking the row again: **Schedule job**, **Schedule
+again**, **Start now** or **Cancel extra job**. **Fix all** fixes up to 100 rows at once, and
+**Dismiss** records who set a row aside and why. **Check now** checks on the serving node. Per promise, the page can pause scheduled checks,
+override the time limit and turn automatic fixing on or off; every change is listed in the
+promise's activity.
+
+A **Trends** card charts every promise's jobs per day over 7, 14 or 30 days (done, failed,
+cancelled or skipped, waiting), run time (average and p95), fixes per day by a person or
+automatic, and who scheduled the work, for all promises or one. Each promise's **Jobs** tab lists
+the function's newest jobs with who scheduled them, the row, when they ran, how long they took,
+retries and errors. The panel's tabs hold the day-to-day work (Needs review, Jobs, Activity); its **Setup**
+button opens the promise's dashboard settings (enabled, time limit, automatic fixing) above how it
+is declared in code, one builder call per line in plain words (rows, job, matchBy, time limit,
+DoneWhen, label, name, automatic fixing, repeats), with what the dashboard overrides marked, and
+the `ConfigurePromises` options it is checked with.
+
+Promises cannot be created or deleted from the dashboard. Results are stored in the definitions
+store, so every replica, including dashboard-only nodes, shows the same state, and open pages
+refresh through the SignalR `PromisesChanged` notification. Read-only users see promises but no
+actions. See the [promises guide](../../docs/promises.md).
 
 ## AI assistant
 

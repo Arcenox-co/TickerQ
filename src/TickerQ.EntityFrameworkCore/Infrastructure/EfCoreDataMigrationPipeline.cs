@@ -143,7 +143,7 @@ public sealed class EfCoreDataMigrationPipeline
                 $"TickerQ EF store is missing the schema required by data migration '{requiredMigration}'. " +
                 "Generate and deploy the consumer-owned migration (for example: " +
                 "'dotnet ef migrations add TickerQProfessionalStoreUpgrade' then 'dotnet ef database update'). " +
-                "The migration must include TickerQStoreMetadata, TickerQNodes, TickerQControlCommands, TickerQDefinitions, SchedulePolicies, ChainRootId, NodeFinalizationOutbox, " +
+                "The migration must include TickerQStoreMetadata, TickerQNodes, TickerQControlCommands, TickerQDefinitions, SchedulePolicies, TickerQPromises, ChainRootId, NodeFinalizationOutbox, " +
                 "the schedule-policy and missed-execution columns on TimeTickers and CronTickers, " +
                 "and the current additive CronTicker columns/indexes.", ex);
         }
@@ -193,6 +193,8 @@ public sealed class EfCoreDataMigrationPipeline
                 typeof(TickerQDefinitionEntity).GetProperties().Select(x => x.Name).ToArray()),
             Requirement(model.FindEntityType(typeof(SchedulePolicyEntity)),
                 typeof(SchedulePolicyEntity).GetProperties().Select(x => x.Name).ToArray()),
+            Requirement(model.FindEntityType(typeof(TickerQPromiseEntity)),
+                typeof(TickerQPromiseEntity).GetProperties().Select(x => x.Name).ToArray()),
             Requirement(cron, "SeedKey", "SeedOwnerNamespace", "SeedManifestEpoch", "DefinitionRevision",
                 "SeedLastSeenAt", "RetirementRequestedAt", "RetiredAt", "SeedWasEnabledBeforeRetirement",
                 "SchedulePolicyName", "SchedulePolicyVersion", "BlockedOccurrenceBehavior",

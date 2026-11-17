@@ -42,6 +42,7 @@
     <Compile Include="../Shared/OverdueAcquisitionContract.cs" Link="Shared/OverdueAcquisitionContract.cs" />
   </ItemGroup>
   <ItemGroup><Compile Include="../Shared/CronChainContract.cs" Link="Shared/CronChainContract.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../Shared/PromiseStateStoreContract.cs" Link="Shared/PromiseStateStoreContract.cs" /></ItemGroup>
   <ItemGroup>
     <!-- The Dashboard API suite, run against this provider's database in Docker. -->
     <Compile Include="../Shared/DashboardApi/*.cs" LinkBase="Shared/DashboardApi" />

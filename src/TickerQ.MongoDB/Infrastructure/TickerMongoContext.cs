@@ -21,6 +21,7 @@ namespace TickerQ.MongoDB.Infrastructure
             StoreMetadata = database.GetCollection<BsonDocument>(prefix + "StoreMetadata");
             Definitions = database.GetCollection<SavedTickerDefinition>(prefix + "TickerQDefinitions");
             SchedulePolicies = database.GetCollection<SchedulePolicy>(prefix + "SchedulePolicies");
+            Promises = database.GetCollection<TickerPromiseStateRow>(prefix + "TickerQPromises");
         }
 
         public IMongoDatabase Database { get; }
@@ -32,5 +33,6 @@ namespace TickerQ.MongoDB.Infrastructure
         public IMongoCollection<BsonDocument> StoreMetadata { get; }
         public IMongoCollection<SavedTickerDefinition> Definitions { get; }
         public IMongoCollection<SchedulePolicy> SchedulePolicies { get; }
+        public IMongoCollection<TickerPromiseStateRow> Promises { get; }
     }
 }

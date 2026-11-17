@@ -61,6 +61,10 @@
     --status-skipped: 27 90% 48%;
     --status-cancelled: 215 16% 45%;
     --status-queued: 262 83% 52%;
+    /* Promise charts: kept / in progress / breaking, validated together for colorblind separation. */
+    --promise-kept: #21974c;
+    --promise-progress: #6a1fea;
+    --promise-breaking: #db2424;
     --condition-finally: 263 70% 50%;
     --workflow-sync: 198 88% 38%;
 
@@ -78,6 +82,10 @@
 
 .dark {
     --background: 222 47% 6%;
+    /* Stepped into the dark lightness band, not flipped. */
+    --promise-kept: #239f51;
+    --promise-progress: #8f65f2;
+    --promise-breaking: #ee3333;
     --foreground: 210 40% 98%;
 
     --card: 222 47% 8%;

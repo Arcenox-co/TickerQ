@@ -196,6 +196,10 @@ The generated model must include:
   against, and the `TickerQControlCommands` durable control table. Both
   use `ApplicationNamespaceKey` as the leading key/index column; the control command lookup
   index also includes target node, status, and request time.
+- The `TickerQPromises` table that holds each promise's state (its latest check, dismissals,
+  dashboard settings and lease) as one JSON row per promise and application namespace. Its
+  composite key starts with `ApplicationNamespaceKey`; the JSON column is unbounded (`NCLOB` on
+  Oracle). See the [promises guide](promises.md#storage).
 - The `TickerQDefinitions` table used by dashboard templates and non-executable time-ticker
   drafts. Its composite key starts with `ApplicationNamespaceKey`; its list index includes
   namespace, definition kind, target, and creation time. `NameKey` is required and has a unique

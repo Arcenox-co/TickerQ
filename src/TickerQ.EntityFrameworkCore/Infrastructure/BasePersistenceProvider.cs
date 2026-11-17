@@ -3196,6 +3196,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
     // EF Core fully implements lease renewal and the stale-job watchdog below.
     public bool SupportsLeaseBasedRecovery => true;
 
+    // Status, ExecutedAt and Id filters are served by the TimeTickers indexes.
+    public bool SupportsPromiseDeltaReads => true;
+
     public async Task<int> RenewTimeTickerLeases(Guid[] timeTickerIds, DateTime leaseUntil, CancellationToken cancellationToken = default)
     {
         if (timeTickerIds == null || timeTickerIds.Length == 0)

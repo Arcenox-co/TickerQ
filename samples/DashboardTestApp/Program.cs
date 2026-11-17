@@ -31,6 +31,24 @@ if (useOpenAIHistory)
     builder.Services.AddScoped<TickerQ.Utilities.Interfaces.IAssistantHistoryStore, DashboardTestApp.OpenAIConversationHistoryStore>();
 }
 
+// The app's own billing data, which the promises below check against TickerQ's jobs.
+builder.Services.AddDbContext<DashboardTestApp.BillingDbContext>(o => o.UseSqlite(DashboardTestApp.Billing.ConnectionString));
+
+// A class-based function with a promise: every paid order is processed within a minute of payment.
+// Missed orders are listed on the dashboard's Promises page for a person to fix or dismiss.
+builder.Services.MapTicker<DashboardTestApp.ProcessOrderJob, ProcessOrderRequest>()
+    .Promise((DashboardTestApp.BillingDbContext db) => db.Orders.Where(o => o.Status == "Paid" || o.Status == "Processed"), p => p
+        .Within(TimeSpan.FromMinutes(1), after: o => o.PaidAt)
+        .Job(o => new ProcessOrderRequest
+        {
+            OrderId = o.Number,
+            Customer = new CustomerInfo { Email = o.Email, DisplayName = o.Customer },
+            Amount = o.Amount,
+        }, matchBy: r => r.OrderId)
+        .DoneWhen(o => o.Status == "Processed")
+        .Label(o => $"{o.Number} for {o.Customer}")
+        .Named("Paid orders are processed"));
+
 // Test harness for the new React dashboard. File-based SQLite; delete
 // dashboard-testapp.db for a clean slate (the time-ticker seeder below re-runs
 // every startup, so a fresh DB avoids duplicate one-off tickers).
@@ -61,6 +79,22 @@ builder.Services.AddTickerQ(options =>
         // and shared structured investigations and registers their EF stores.
         if (!useOpenAIHistory)
             efOptions.AddAssistantHistory(h => h.MaxConversationsPerUser = 50);
+    });
+
+    // Promise for a [TickerFunction] method, through its generated reference: every finalized invoice is
+    // sent within 20 seconds. Invoices that were never scheduled are scheduled automatically, five per check at most.
+    options.ConfigurePromises(promises =>
+    {
+        promises.CheckInterval = TimeSpan.FromSeconds(15);
+        promises.NeverRanAfter = TimeSpan.FromMinutes(1);   // short, so the demo's waiting-job scenario shows quickly
+        promises.For(DashboardTestApp.TickerFunctions.BillingJobs.SendInvoice,
+            (DashboardTestApp.BillingDbContext db) => db.Invoices.Where(i => i.Status != "Draft"), p => p
+                .Within(TimeSpan.FromSeconds(20), after: i => i.FinalizedAt)
+                .Job(i => new DashboardTestApp.SendInvoiceRequest { InvoiceId = i.Id }, matchBy: r => r.InvoiceId)
+                .DoneWhen(i => i.Status == "Sent")
+                .Label(i => $"{i.Number} for {i.Customer}")
+                .Named("Finalized invoices are sent")
+                .AutoFix(maxPerCheck: 5));
     });
 
     // Seed a couple of one-off time tickers on startup. Each key is created once,
@@ -157,6 +191,36 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.UseTickerQ();
+
+// Billing demo data and its jobs, seeded once the scheduler is running.
+app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(async () =>
+{
+    try { await DashboardTestApp.Billing.SeedAsync(app.Services); }
+    catch (Exception ex) { app.Logger.LogError(ex, "Billing demo seed failed"); }
+}));
+
+// Finalizes an invoice without scheduling SendInvoice, as if the app crashed in between.
+// The invoices promise notices after its 20-second limit and schedules it automatically.
+// Real-life promise scenarios: POST /demo/order-not-scheduled, /demo/order-cancelled, /demo/scheduler-outage,
+// /demo/scheduler-start, /demo/invoice-lost-update, /demo/invoice-bad-email, /demo/invoice-not-scheduled, /demo/invoice-burst?count=7
+DashboardTestApp.PromiseScenarios.MapPromiseScenarios(app);
+
+app.MapPost("/billing/invoices", async (DashboardTestApp.BillingDbContext db, string? customer, decimal? amount) =>
+{
+    var number = $"INV-{1000 + await db.Invoices.CountAsync() + 1}";
+    var invoice = new DashboardTestApp.Invoice
+    {
+        Number = number,
+        Customer = customer ?? "Stark Industries",
+        Email = "ap@stark.test",
+        Amount = amount ?? 500,
+        Status = "Finalized",
+        FinalizedAt = DateTime.UtcNow,
+    };
+    db.Invoices.Add(invoice);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { invoice.Id, invoice.Number, Scheduled = false });
+});
 
 // On-demand scheduling so you can watch executions appear live in the dashboard.
 app.MapPost("/schedule/{function}", async (
@@ -282,33 +346,9 @@ public class SampleJobs
         await Task.Delay(TimeSpan.FromMilliseconds(750), ct);
         _logger.LogInformation("Invoice generated at {Now:O}", DateTime.UtcNow);
     }
-
-    // Strongly-typed payload demo. Because the parameter is
-    // TickerFunctionContext<ProcessOrderRequest> (not the plain context), the
-    // source generator emits a JSON schema for ProcessOrderRequest. The
-    // dashboard's Functions view and the Chain Builder pick that schema up and
-    // render the schema-driven payload editor — a form with a field per member,
-    // required markers, the amount range, and the priority enum. Schedule it
-    // from that form, or seed one with a typed body.
-    [TickerFunction("ProcessOrder")]
-    public Task ProcessOrder(TickerFunctionContext<ProcessOrderRequest> context, CancellationToken ct)
-    {
-        var order = context.Request;
-        _logger.LogInformation(
-            "Processing order {OrderId} for {Email} — {Amount} (priority {Priority}, {TagCount} tags)",
-            order?.OrderId,
-            order?.Customer.Email,
-            order?.Amount,
-            order?.Priority,
-            order?.Tags?.Count ?? 0);
-        return Task.CompletedTask;
-    }
 }
 
-// Nested, strongly-typed request contract for the ProcessOrder function above.
-// Required members ([JsonRequired]) become required fields in the editor;
-// nullable / defaulted members render as optional; the DataAnnotations
-// ([Range], [MaxLength]) drive client-side validation in the form.
+// Nested, strongly-typed request contract for ProcessOrderJob (Billing.cs).
 public sealed class ProcessOrderRequest
 {
     [JsonRequired]

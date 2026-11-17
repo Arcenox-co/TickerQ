@@ -32,5 +32,7 @@ namespace TickerQ.Utilities.Interfaces
         void UpdateHostStatus(bool active);
         void UpdateHostException(string exceptionMessage);
         Task UpdateNodeHeartBeatAsync(JsonElement nodeHeartBeat);
+        /// <summary>A promise's result changed; clients refetch the promises list.</summary>
+        Task PromisesChangedAsync();
     }
 }

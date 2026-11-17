@@ -61,6 +61,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     protected string Prefix => Keys.PartitionPrefix;
     protected string TimeTickerIdsKey => Keys.TimeTickerIds;
     protected string TimeTickerPendingKey => Keys.TimeTickerPending;
+    protected string TimeTickerChangesKey => Keys.TimeTickerChanges;
     protected string CronIdsKey => Keys.CronIds;
     protected string CronRepairPhaseKey => Keys.CronRepairPhase;
     protected string CronRepairCursorKey => Keys.CronRepairCursor;
@@ -1484,7 +1485,11 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                  (RedisKey)TimeTickerRetentionSucceededKey, (RedisKey)TimeTickerRetentionFailedKey,
                  (RedisKey)TimeTickerRetentionCancelledKey, (RedisKey)TimeTickerRetentionSkippedKey],
                 [.. BuildUnifiedTimeTickerMutationArguments(root, expectedUpdatedAt), raw]).ConfigureAwait(false);
-            if (outcome == 1) return affected;
+            if (outcome == 1)
+            {
+                await IndexManager.MarkTimeTickerChangedAsync(root.Id).ConfigureAwait(false);
+                return affected;
+            }
             if (outcome != -2) return 0;
         }
         throw new InvalidOperationException("The ticker kept changing during cancellation. Retry CancelAsync.");
@@ -1613,6 +1618,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                      (RedisKey)TimeTickerRetentionSucceededKey, (RedisKey)TimeTickerRetentionFailedKey,
                      (RedisKey)TimeTickerRetentionCancelledKey, (RedisKey)TimeTickerRetentionSkippedKey],
                     BuildUnifiedTimeTickerMutationArguments(current, expectedUpdatedAt)).ConfigureAwait(false);
+                if (outcome == 1) await IndexManager.MarkTimeTickerChangedAsync(current.Id).ConfigureAwait(false);
                 if (outcome != -2) break;
                 current = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(current.Id)).ConfigureAwait(false);
                 if (current == null) break;

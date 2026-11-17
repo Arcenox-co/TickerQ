@@ -20,6 +20,9 @@ using TickerQ.Utilities.Licensing;
 using TickerQ.Utilities.Managers;
 using TickerQ.Utilities.Models;
 using TickerQ.Utilities.Temps;
+using TickerQ.Promises;
+using TickerQ.Utilities.Events;
+using TickerQ.Utilities.Promises;
 
 namespace TickerQ.DependencyInjection
 {
@@ -227,8 +230,21 @@ namespace TickerQ.DependencyInjection
             optionInstance.JobRetention.Validate();
             services.AddSingleton(optionInstance.JobRetention);
 
+            // Promises come from options.ConfigurePromises and from MapTicker(...).Promise(...), which registers
+            // its definitions directly. The service is resolvable on every host so dashboards read stored results.
+            optionInstance.Promises.Validate();
+            services.AddSingleton(optionInstance.Promises);
+            foreach (var definition in optionInstance.Promises.Definitions)
+                services.AddSingleton(definition);
+            services.TryAddSingleton<TickerQEventPublisher>();
+            services.AddSingleton<ITickerPromiseService, TickerPromiseService<TTimeTicker, TCronTicker>>();
+
             // Register AFTER initializer and scheduler to ensure it runs last
             services.AddHostedService<TickerQStartupValidator>();
+            services.AddHostedService<TickerQPromiseStartupValidator>();
+            // Registered last so it stops first, before the scheduler drains.
+            if (optionInstance.RegisterBackgroundServices)
+                services.AddHostedService<TickerQPromiseBackgroundService>();
 
             // A design-time tool that starts the host (dotnet-getdocument) must not run startup I/O.
             if (hostedServicesBefore != null)

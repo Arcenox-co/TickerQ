@@ -9,6 +9,8 @@ public enum SavedTickerDefinitionKind
 {
     Template = 0,
     Draft = 1,
+    /// <summary>A promise's state: its latest check, dismissals, dashboard settings and lease. Never activated.</summary>
+    Promise = 2,
 }
 
 /// <summary>Scheduler surface that can consume a persisted definition.</summary>
