@@ -25,6 +25,7 @@ internal sealed class RedisIndexManager<TTimeTicker, TCronTicker>
 
     private string TimeTickerIdsKey => _keys.TimeTickerIds;
     private string TimeTickerPendingKey => _keys.TimeTickerPending;
+    private string TimeTickerChangesKey => _keys.TimeTickerChanges;
     private string CronIdsKey => _keys.CronIds;
     private string CronOccurrenceIdsKey => _keys.CronOccurrenceIds;
     private string CronOccurrencePendingKey => _keys.CronOccurrencePending;
@@ -53,15 +54,17 @@ internal sealed class RedisIndexManager<TTimeTicker, TCronTicker>
 
     internal Task AddTimeTickerIndexesAsync(TTimeTicker ticker)
     {
+        var now = _clock.UtcNow;
         var operations = new List<IndexOperation>
         {
             new("SADD", TimeTickerIdsKey),
             ticker.ExecutionTime.HasValue && CanAcquire(ticker.Status, ticker.LockHolder, _lockHolder)
                 ? new IndexOperation("ZADD", TimeTickerPendingKey, ToScore(ticker.ExecutionTime.Value))
-                : new IndexOperation("ZREM", TimeTickerPendingKey)
+                : new IndexOperation("ZREM", TimeTickerPendingKey),
+            new("ZADD", TimeTickerChangesKey, ToScore(now))
         };
         RemoveTimeRetentionIndexes(operations);
-        AddTimeRetentionIndex(operations, ticker, _clock.UtcNow);
+        AddTimeRetentionIndex(operations, ticker, now);
         return MutateAsync(ticker.Id, operations);
     }
 
@@ -70,11 +73,19 @@ internal sealed class RedisIndexManager<TTimeTicker, TCronTicker>
         var operations = new List<IndexOperation>
         {
             new("SREM", TimeTickerIdsKey),
-            new("ZREM", TimeTickerPendingKey)
+            new("ZREM", TimeTickerPendingKey),
+            new("ZREM", TimeTickerChangesKey)
         };
         RemoveTimeRetentionIndexes(operations);
         return MutateAsync(id, operations);
     }
+
+    /// <summary>Records that an aggregate was just written, where a script kept the other indexes itself.</summary>
+    internal Task MarkTimeTickerChangedAsync(Guid rootId)
+        => MutateAsync(rootId, [new("ZADD", TimeTickerChangesKey, ToScore(_clock.UtcNow))]);
+
+    internal Task ForgetTimeTickerChangeAsync(Guid rootId)
+        => MutateAsync(rootId, [new("ZREM", TimeTickerChangesKey)]);
 
     internal Task AddCronIndexesAsync(TCronTicker ticker)
         => MutateAsync(ticker.Id, [new("SADD", CronIdsKey)]);

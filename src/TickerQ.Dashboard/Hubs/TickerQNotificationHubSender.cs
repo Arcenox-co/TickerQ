@@ -61,6 +61,9 @@ namespace TickerQ.Dashboard.Hubs
         public Task CanceledTickerNotifyAsync(Guid id)
             => SendSafelyAsync(() => _hubContext.Clients.All.SendAsync("CanceledTickerNotification", id));
 
+        public Task PromisesChangedAsync()
+            => SendSafelyAsync(() => _hubContext.Clients.All.SendAsync("PromisesChanged"));
+
         public Task AddCronOccurrenceAsync(Guid groupId, Guid occurrenceId)
             => SendSafelyAsync(() => _hubContext.Clients.Group(groupId.ToString("D"))
                 .SendAsync("AddCronOccurrenceNotification", occurrenceId));

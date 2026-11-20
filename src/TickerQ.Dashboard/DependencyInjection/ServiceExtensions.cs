@@ -52,6 +52,7 @@ namespace TickerQ.Dashboard.DependencyInjection
             {
                 services.AddScoped<ITickerDashboardRepository<TTimeTicker, TCronTicker>, TickerDashboardRepository<TTimeTicker, TCronTicker>>();
                 services.Replace(ServiceDescriptor.Singleton<ITickerQNotificationHubSender, TickerQNotificationHubSender>());
+                services.TryAddEnumerable(ServiceDescriptor.Singleton<Utilities.Events.ITickerQEventSink, DashboardEventSink>());
                 
                 // Validate configuration
                 dashboardConfig.Validate();

@@ -469,6 +469,29 @@ namespace TickerQ.Utilities.Interfaces
         /// <summary>Read-only execution query including independently stored and embedded chain steps.</summary>
         ITickerQueryable<TTimeTicker> TimeTickersMonitoringQuery() => TimeTickersQuery();
         /// <summary>
+        /// Whether <see cref="TimeTickersMonitoringQuery"/> serves filters on status, finish time and id from an index,
+        /// so a promise check can read only the jobs that changed since its last check. A provider that evaluates
+        /// predicates in memory keeps the default, and promises read their whole window each check instead.
+        /// </summary>
+        bool SupportsPromiseDeltaReads => false;
+        /// <summary>
+        /// Whether the store keeps a feed of time-ticker aggregates by the time they were last written, so a promise
+        /// check can read what changed since its last check, and whole aggregates by root id, without a scan. A store
+        /// that evaluates query predicates in memory, such as Redis, offers this instead of
+        /// <see cref="SupportsPromiseDeltaReads"/>.
+        /// </summary>
+        bool SupportsPromiseChangeFeed => false;
+        /// <summary>
+        /// The function's jobs, chain steps included, from the aggregates written at or after <paramref name="since"/>.
+        /// Returned jobs carry their request. Null when more than <paramref name="take"/> aggregates were written, so
+        /// the caller reads its window again instead.
+        /// </summary>
+        Task<TTimeTicker[]> ReadTimeTickersChangedSinceAsync(string function, DateTime since, int take,
+            CancellationToken cancellationToken = default) => Task.FromResult(Array.Empty<TTimeTicker>());
+        /// <summary>Every job of the given aggregates: the roots and their chain steps, with their requests.</summary>
+        Task<TTimeTicker[]> ReadTimeTickerAggregatesAsync(Guid[] rootIds, CancellationToken cancellationToken = default)
+            => Task.FromResult(Array.Empty<TTimeTicker>());
+        /// <summary>
         /// Reads bounded execution metadata for monitoring without materializing job payloads or graphs.
         /// Implementations must apply the current runtime partition and the snapshot's paging contract.
         /// </summary>

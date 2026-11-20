@@ -31,5 +31,6 @@ namespace TickerQ.Utilities.Temps
         public void UpdateHostStatus(bool active) { }
         public void UpdateHostException(string exceptionMessage) { }
         public Task UpdateNodeHeartBeatAsync(JsonElement nodeHeartBeat) => Task.CompletedTask;
+        public Task PromisesChangedAsync() => Task.CompletedTask;
     }
 }

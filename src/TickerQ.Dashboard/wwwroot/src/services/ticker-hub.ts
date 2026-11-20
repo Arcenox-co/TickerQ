@@ -131,6 +131,9 @@ export function startTickerHub(qc: QueryClient): HubConnection | null {
   conn.on("UpdateHostExceptionNotification", () => inv(["host", "status"]));
   conn.on("UpdateNodeHeartBeat", () => inv(["nodes"], ["stats", "node-jobs"]));
 
+  // ---- Promises: a hint without data, sent when a check, fix or setting changes one ----
+  conn.on("PromisesChanged", () => inv(["promises"]));
+
   const restoreSubscriptions = async () => {
     if (connection !== conn) return;
     // SignalR assigns a new connection after reconnect; group membership is lost.
@@ -141,7 +144,8 @@ export function startTickerHub(qc: QueryClient): HubConnection | null {
     invalidateTimeAll();
     invalidateCronAll();
     invalidateOccAll();
-    inv(["host", "status"], ["host", "next-ticker"]);
+    // Hints sent while disconnected were missed.
+    inv(["host", "status"], ["host", "next-ticker"], ["promises"]);
   };
 
   const scheduleStart = () => {

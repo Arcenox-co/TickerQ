@@ -184,6 +184,47 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 .SetProperty(x => x.Version, x => x.Version + 1), cancellationToken).ConfigureAwait(false) == 1;
     }
 
+    // -1 until read from the model; 0 when the column is unbounded.
+    private int _definitionJsonLength = -1;
+
+    public int? MaxDefinitionJsonLength
+    {
+        get
+        {
+            if (_definitionJsonLength < 0)
+            {
+                using var session = DbContextLease<TDbContext>.Create(_serviceProvider);
+                _definitionJsonLength = DefinitionJsonColumnLength(session.Context);
+            }
+            return _definitionJsonLength == 0 ? null : _definitionJsonLength;
+        }
+    }
+
+    // A string without a max length is unbounded on most providers, but Oracle maps it to NVARCHAR2(2000), and
+    // some providers give the length only in the store type.
+    private static int DefinitionJsonColumnLength(DbContext context)
+    {
+        try
+        {
+            var mapping = context.Model.FindEntityType(typeof(TickerQDefinitionEntity))
+                ?.FindProperty(nameof(TickerQDefinitionEntity.DefinitionJson))
+                ?.FindRelationalTypeMapping();
+            if (mapping == null) return 0;
+            if (mapping.Size is > 0 and var size) return size;
+            var storeType = mapping.StoreType;
+            var open = storeType.IndexOf('(');
+            if (open < 0) return 0;
+            var digits = storeType.AsSpan(open + 1);
+            var end = 0;
+            while (end < digits.Length && char.IsAsciiDigit(digits[end])) end++;
+            return end > 0 && int.TryParse(digits[..end], out var length) ? length : 0;
+        }
+        catch (InvalidOperationException)
+        {
+            return 0;
+        }
+    }
+
     private static SavedTickerDefinition ToDefinition(TickerQDefinitionEntity row) => new()
     {
         Id = row.Id, ApplicationNamespaceKey = row.ApplicationNamespaceKey, Kind = row.Kind,

@@ -111,6 +111,10 @@ namespace TickerQ.Utilities
             return _typeMappings.TryGetValue(typeof(T), out var name) ? name : typeof(T).Name;
         }
 
+        /// <summary>The function name MapTicker registered for <paramref name="type"/>, without falling back to its type name.</summary>
+        internal static bool TryGetFunctionName(Type type, out string functionName)
+            => _typeMappings.TryGetValue(type, out functionName);
+
         /// <summary>
         /// Replaces the entire frozen function registry with the provided dictionary.
         /// Unlike <see cref="RegisterFunctions"/>, this REMOVES entries that are absent

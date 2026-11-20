@@ -27,6 +27,8 @@ internal sealed class RedisKeyBuilder
 
     internal string TimeTickerIds => Key("tt:ids");
     internal string TimeTickerPending => Key("tt:pending");
+    /// <summary>Time-ticker roots by when they were last written, for promise checks to read only what changed.</summary>
+    internal string TimeTickerChanges => Key("tt:changes");
     internal string CronIds => Key("cron:ids");
     internal string CronRepairPhase => Key("cron:repair:phase");
     internal string CronRepairCursor => Key("cron:repair:cursor");
@@ -58,6 +60,8 @@ internal sealed class RedisKeyBuilder
     internal string DefinitionIds => Key("definitions:ids");
     internal string Definition(Guid id) => Key($"definitions:{id}");
     internal string DefinitionName(string nameKey) => Key($"definitions:name:{nameKey}");
+    internal string PromiseStateIds => Key("promises:ids");
+    internal string PromiseState(Guid id) => Key($"promises:{id}");
     internal string SchedulePolicyIds => Key("schedule-policies:ids");
     internal string SchedulePolicy(Guid id) => Key($"schedule-policies:{id}");
     internal string SchedulePolicyName(string nameKey) => Key($"schedule-policies:name:{nameKey}");

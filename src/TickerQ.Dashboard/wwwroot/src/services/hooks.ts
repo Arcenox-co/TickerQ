@@ -6,6 +6,7 @@ import {
   useQueryClient,
   type UseQueryOptions,
 } from "@tanstack/react-query";
+import { refreshAfterNextCheck } from "@/lib/relative-time";
 import { dashboardApi } from "./dashboard-api";
 import type {
   AddCronTickerRequest,
@@ -74,6 +75,10 @@ export const qk = {
   schedulePolicies: ["schedule-policies"] as const,
   scheduleDateProviders: ["schedule-policies", "date-providers"] as const,
   schedulePolicyUsage: (id: string) => ["schedule-policies", id, "usage"] as const,
+  promises: ["promises"] as const,
+  promiseJobs: (id: string) => ["promises", id, "jobs"] as const,
+  promiseAnalytics: (id: string | null, days: number, offsetMinutes: number) =>
+    ["promises", "analytics", id ?? "all", days, offsetMinutes] as const,
 };
 
 type QO<T> = Omit<UseQueryOptions<T>, "queryKey" | "queryFn">;
@@ -151,6 +156,35 @@ export function useDefinition(id: string | null) {
     queryKey: qk.definition(id ?? ""),
     queryFn: ({ signal }) => dashboardApi.getDefinition(id!, signal),
     enabled: !!id,
+  });
+}
+
+// Checks run on a schedule, maybe on another node. The hub's PromisesChanged hint refreshes on changes; otherwise the
+// list refreshes just after the next check is due, so "checked" and "next check" stay current.
+export function usePromises() {
+  return useQuery({
+    queryKey: qk.promises,
+    queryFn: ({ signal }) => dashboardApi.getPromises(signal),
+    refetchInterval: query => refreshAfterNextCheck(query.state.data ?? [], Date.now()),
+  });
+}
+
+// Under the promises key, so a promise change or fix refreshes it too; the poll catches jobs finishing.
+export function usePromiseJobs(id: string, enabled = true) {
+  return useQuery({
+    queryKey: qk.promiseJobs(id),
+    queryFn: ({ signal }) => dashboardApi.getPromiseJobs(id, signal),
+    refetchInterval: 10_000,
+    enabled,
+  });
+}
+
+/** Every promise's jobs per day, or one promise's; days are the viewer's, by its UTC offset. */
+export function usePromiseAnalytics(id: string | null, days: number, offsetMinutes: number) {
+  return useQuery({
+    queryKey: qk.promiseAnalytics(id, days, offsetMinutes),
+    queryFn: ({ signal }) => dashboardApi.getPromiseAnalytics(id, days, offsetMinutes, signal),
+    refetchInterval: 60_000,
   });
 }
 

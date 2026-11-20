@@ -276,4 +276,6 @@ internal sealed class NodeHeartbeatPayload
 [JsonSerializable(typeof(RedisNodeFinalizationRecord))]
 [JsonSerializable(typeof(SavedTickerDefinition))]
 [JsonSerializable(typeof(SavedTickerDefinition[]))]
+[JsonSerializable(typeof(TickerPromiseStateRow))]
+[JsonSerializable(typeof(TickerPromiseStateRow[]))]
 internal partial class RedisContextJsonSerializerContext : JsonSerializerContext;

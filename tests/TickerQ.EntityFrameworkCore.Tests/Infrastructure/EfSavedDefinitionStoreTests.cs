@@ -87,3 +87,34 @@ public sealed class EfSavedDefinitionStoreTests
         Assert.False(string.IsNullOrWhiteSpace(first.NameKey));
     }
 }
+
+/// <summary>Promise state rows on the relational definitions table, here on SQLite.</summary>
+public sealed class EfPromiseStateStoreTests : TickerQ.Tests.Shared.PromiseStateStoreContract, IAsyncLifetime
+{
+    private SqliteConnection _connection = null!;
+    private DbContextOptions<TestTickerQDbContext> _options = null!;
+
+    public async Task InitializeAsync()
+    {
+        _connection = new SqliteConnection("Data Source=:memory:");
+        await _connection.OpenAsync();
+        _options = new DbContextOptionsBuilder<TestTickerQDbContext>().UseSqlite(_connection).Options;
+        await using var db = new TestTickerQDbContext(_options);
+        await db.Database.EnsureCreatedAsync();
+    }
+
+    public async Task DisposeAsync() => await _connection.DisposeAsync();
+
+    protected override Task<ITickerPromiseStateStore> NewStoreAsync(string applicationNamespace)
+    {
+        var scheduler = new SchedulerOptionsBuilder();
+        scheduler.BindRuntimeActivationScope(applicationNamespace, 0, schedulerEnabled: false);
+        var services = new ServiceCollection()
+            .AddSingleton<IDbContextFactory<TestTickerQDbContext>>(new PooledDbContextFactory<TestTickerQDbContext>(_options))
+            .BuildServiceProvider();
+        var clock = Substitute.For<ITickerClock>();
+        clock.UtcNow.Returns(DateTime.UtcNow);
+        return Task.FromResult<ITickerPromiseStateStore>(
+            new TestableProvider(services, clock, scheduler, Substitute.For<ITickerQRedisContext>()));
+    }
+}

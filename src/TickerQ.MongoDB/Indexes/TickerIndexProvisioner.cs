@@ -47,6 +47,7 @@ namespace TickerQ.MongoDB.Indexes
             await CreateClusterControlIndexes(cancellationToken).ConfigureAwait(false);
             await CreateDefinitionIndexes(cancellationToken).ConfigureAwait(false);
             await CreateSchedulePolicyIndexes(cancellationToken).ConfigureAwait(false);
+            await CreatePromiseIndexes(cancellationToken).ConfigureAwait(false);
             await ProbeTransactionsAndMarkReadyAsync(fence, cancellationToken).ConfigureAwait(false);
         }
 
@@ -271,6 +272,14 @@ namespace TickerQ.MongoDB.Indexes
                     keys.Ascending(x => x.ApplicationNamespaceKey).Ascending(x => x.NameKey),
                     new CreateIndexOptions { Name = "UX_TickerQDefinitions_Name", Unique = true }),
             }, cancellationToken: ct).ConfigureAwait(false);
+        }
+
+        private Task CreatePromiseIndexes(CancellationToken ct)
+        {
+            var keys = Builders<TickerQ.Utilities.Models.TickerPromiseStateRow>.IndexKeys;
+            return _context.Promises.Indexes.CreateOneAsync(new CreateIndexModel<TickerQ.Utilities.Models.TickerPromiseStateRow>(
+                keys.Ascending(x => x.ApplicationNamespaceKey).Ascending(x => x.CreatedAtUtc),
+                new CreateIndexOptions { Name = "IX_TickerQPromises_List" }), cancellationToken: ct);
         }
 
         private Task CreateSchedulePolicyIndexes(CancellationToken ct)

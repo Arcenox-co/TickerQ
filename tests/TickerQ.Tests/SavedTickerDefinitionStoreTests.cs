@@ -153,3 +153,20 @@ public sealed class SavedTickerDefinitionStoreTests : IDisposable
 
     public void Dispose() => TickerInMemoryPersistenceProvider<Job, Cron>.ResetAllStateForTests();
 }
+
+/// <summary>Promise state rows in the in-memory store. Each test uses its own namespaces, so no state is reset.</summary>
+public sealed class InMemoryPromiseStateStoreTests : TickerQ.Tests.Shared.PromiseStateStoreContract
+{
+    private sealed class Job : TimeTickerEntity<Job> { }
+    private sealed class Cron : CronTickerEntity { }
+
+    protected override Task<ITickerPromiseStateStore> NewStoreAsync(string applicationNamespace)
+    {
+        var scheduler = new SchedulerOptionsBuilder();
+        scheduler.BindRuntimeActivationScope(applicationNamespace, 1, false);
+        var clock = Substitute.For<ITickerClock>();
+        clock.UtcNow.Returns(DateTime.UtcNow);
+        var services = new ServiceCollection().AddSingleton(clock).AddSingleton(scheduler).BuildServiceProvider();
+        return Task.FromResult<ITickerPromiseStateStore>(new TickerInMemoryPersistenceProvider<Job, Cron>(services));
+    }
+}

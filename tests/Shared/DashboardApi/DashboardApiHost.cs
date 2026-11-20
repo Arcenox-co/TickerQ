@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using TickerQ.Dashboard;
 using TickerQ.Dashboard.DependencyInjection;
 using TickerQ.DependencyInjection;
 using TickerQ.Integrations.DependencyInjection;
@@ -53,6 +54,10 @@ public sealed class DashboardApiHostOptions
     public bool ActiveLicense { get; init; } = true;
     public Action<SchedulerOptionsBuilder> Scheduler { get; init; }
     public Action<IServiceCollection> Services { get; init; }
+    /// <summary>Further TickerQ options, applied after the store and before the Dashboard.</summary>
+    public Action<TickerOptionsBuilder<TimeTickerEntity, CronTickerEntity>> TickerQ { get; init; }
+    /// <summary>Further Dashboard options, applied after anonymous access and integration management.</summary>
+    public Action<DashboardOptionsBuilder> Dashboard { get; init; }
 }
 
 public static class DashboardApiHost
@@ -92,9 +97,12 @@ public static class DashboardApiHost
             tickerq.ConfigureExecutionLogs(logs => logs.PersistToDatabase = true);
             store.Configure(tickerq);
             tickerq.AddIntegrations();
-            tickerq.AddDashboard(dashboard => dashboard
-                .AllowAnonymousDashboard()
-                .AllowIntegrationManagement(_ => true));
+            options.TickerQ?.Invoke(tickerq);
+            tickerq.AddDashboard(dashboard =>
+            {
+                dashboard.AllowAnonymousDashboard().AllowIntegrationManagement(_ => true);
+                options.Dashboard?.Invoke(dashboard);
+            });
         });
         if (options.ActiveLicense)
             TestLicense.UseActive(builder.Services);

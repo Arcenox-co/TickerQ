@@ -1,4 +1,7 @@
 import type { IntegrationConfiguration, IntegrationSnapshot, IntegrationDeliveryStatus } from "./integration-types";
+import type {
+  PromiseAnalytics, PromiseFixAllResult, PromiseFixResult, PromiseJobList, PromiseSettingsChange, PromiseSnapshot,
+} from "./promise-types";
 import { resolveDashboardUrl } from "@/lib/runtime-config";
 import { formatApiErrorMessage } from "@/lib/api-error-message";
 import { tokenStore } from "@/lib/auth/token-store";
@@ -284,6 +287,25 @@ export const dashboardApi = {
     post<SchedulePolicyPreviewItem[]>(`/schedule-policies/${id}/preview`, body, signal),
   getSchedulePolicyUsage: (id: string, signal?: AbortSignal) =>
     get<SchedulePolicyUsage>(`/schedule-policies/${id}/usage`, signal),
+
+  // Promises (declared in code; the dashboard checks, fixes, dismisses and tunes them)
+  getPromises: (signal?: AbortSignal) =>
+    get<PromiseSnapshot[]>("/promises", signal),
+  getPromiseAnalytics: (id: string | null, days: number, offsetMinutes: number, signal?: AbortSignal) =>
+    get<PromiseAnalytics[]>(`/promises/${id ? `${encodeURIComponent(id)}/` : ""}analytics?days=${days}&offsetMinutes=${offsetMinutes}`, signal),
+  getPromiseJobs: (id: string, signal?: AbortSignal) =>
+    get<PromiseJobList>(`/promises/${encodeURIComponent(id)}/jobs`, signal),
+  checkPromise: (id: string) =>
+    post<PromiseSnapshot>(`/promises/${encodeURIComponent(id)}/check`),
+  updatePromiseSettings: (id: string, change: PromiseSettingsChange) =>
+    put<PromiseSnapshot>(`/promises/${encodeURIComponent(id)}/settings`, change),
+  fixPromiseFinding: (id: string, findingId: string) =>
+    post<PromiseFixResult>(`/promises/${encodeURIComponent(id)}/findings/${encodeURIComponent(findingId)}/fix`),
+  fixAllPromiseFindings: (id: string) =>
+    post<PromiseFixAllResult>(`/promises/${encodeURIComponent(id)}/fix-all`),
+  dismissPromiseFinding: (id: string, findingId: string, reason?: string) =>
+    post<PromiseSnapshot>(`/promises/${encodeURIComponent(id)}/findings/${encodeURIComponent(findingId)}/dismiss`,
+      reason ? { reason } : undefined),
 
   // Host
   getHostStatus: (signal?: AbortSignal) =>

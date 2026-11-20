@@ -62,10 +62,12 @@ namespace TickerQ.Provider
         {
             internal readonly object IntegrationLock = new();
             internal readonly object DefinitionsLock = new();
+            internal readonly object PromisesLock = new();
             internal readonly object SchedulePoliciesLock = new();
             internal TickerQ.Utilities.Integrations.IntegrationSettingsRecord IntegrationSettings;
             internal TickerQ.Utilities.Integrations.IntegrationSettingsRecord IntegrationMonitoring;
             internal readonly Dictionary<Guid, SavedTickerDefinition> Definitions = new();
+            internal readonly Dictionary<Guid, TickerPromiseStateRow> Promises = new();
             internal readonly Dictionary<Guid, SchedulePolicy> SchedulePolicies = new();
             internal readonly ConcurrentDictionary<string, TickerQ.Utilities.Cluster.TickerQNodeRecord> Nodes = new(StringComparer.Ordinal);
             internal readonly ConcurrentDictionary<Guid, TickerQ.Utilities.Cluster.TickerQControlCommand> ControlCommands = new();
@@ -178,6 +180,7 @@ namespace TickerQ.Provider
                         state.TimeTickerResults.Clear();
                         state.CronOccurrenceResults.Clear();
                         lock (state.DefinitionsLock) state.Definitions.Clear();
+                        lock (state.PromisesLock) state.Promises.Clear();
                         state.ActivationEpoch = ActivationEpochState.PreEpoch;
                         state.ScopedActivationEpochs.Clear();
                     }
@@ -225,6 +228,9 @@ namespace TickerQ.Provider
         // explicitly and inherits the compatibility-safe (fail-closed) interface defaults.
         public bool SupportsLeaseBasedRecovery => false;
         public bool SupportsLegacyRuntimePartitionAdoption => true;
+        // Every read is a dictionary scan here, so a delta costs the same as a reload; opting in keeps the
+        // incremental path exercised wherever this provider runs.
+        public bool SupportsPromiseDeltaReads => true;
 
         public Task AdoptLegacyRuntimePartitionAsync(
             LegacyRuntimePartitionAdoption adoption, CancellationToken cancellationToken = default)

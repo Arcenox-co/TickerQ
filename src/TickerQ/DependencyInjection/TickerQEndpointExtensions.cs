@@ -37,8 +37,9 @@ namespace TickerQ.DependencyInjection
 
         /// <summary>
         /// Registers a ticker function via ITickerFunction&lt;TRequest&gt; (with typed request).
+        /// Chain <c>.Promise(...)</c> to promise that rows of the application's data each get a successful job.
         /// </summary>
-        public static TickerFunctionBuilder MapTicker<
+        public static TickerFunctionBuilder<TRequest> MapTicker<
             [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TFunction,
             TRequest>(
             this IServiceCollection services,
@@ -112,8 +113,8 @@ namespace TickerQ.DependencyInjection
         /// <summary>
         /// Registers a lambda-based ticker function with typed request.
         /// </summary>
-        public static TickerFunctionBuilder MapTicker<TRequest>(
-            this IServiceCollection _,
+        public static TickerFunctionBuilder<TRequest> MapTicker<TRequest>(
+            this IServiceCollection services,
             string functionName,
             Func<TickerFunctionContext<TRequest>, CancellationToken, Task> handler)
         {
@@ -132,13 +133,13 @@ namespace TickerQ.DependencyInjection
             });
             RegisterCanonicalDescriptor(functionName, typeof(TRequest));
 
-            return new TickerFunctionBuilder(functionName);
+            return new TickerFunctionBuilder<TRequest>(functionName, services);
         }
 
         /// <summary>
         /// Registers a lambda-based ticker function with typed request and access to IServiceProvider.
         /// </summary>
-        public static TickerFunctionBuilder MapTicker<TRequest>(
+        public static TickerFunctionBuilder<TRequest> MapTicker<TRequest>(
             this IServiceCollection services,
             string functionName,
             Func<TickerFunctionContext<TRequest>, IServiceProvider, CancellationToken, Task> handler)
@@ -158,7 +159,7 @@ namespace TickerQ.DependencyInjection
             });
             RegisterCanonicalDescriptor(functionName, typeof(TRequest));
 
-            return new TickerFunctionBuilder(functionName);
+            return new TickerFunctionBuilder<TRequest>(functionName, services);
         }
 
         #endregion
@@ -210,7 +211,7 @@ namespace TickerQ.DependencyInjection
             return new TickerFunctionBuilder(name);
         }
 
-        internal static TickerFunctionBuilder RegisterTickerFunctionWithRequest<
+        internal static TickerFunctionBuilder<TRequest> RegisterTickerFunctionWithRequest<
             [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TFunction,
             TRequest>(
             IServiceCollection services,
@@ -241,7 +242,7 @@ namespace TickerQ.DependencyInjection
 
             TickerFunctionProvider.RegisterTypeMapping(typeof(TFunction), name);
 
-            return new TickerFunctionBuilder(name);
+            return new TickerFunctionBuilder<TRequest>(name, services, typeof(TFunction));
         }
 
         private static string BuildFunctionName<T>(string groupName, string nameOverride)
@@ -324,7 +325,7 @@ namespace TickerQ.DependencyInjection
         /// <summary>
         /// Registers a ticker function with typed request in this group.
         /// </summary>
-        public TickerFunctionBuilder MapTicker<
+        public TickerFunctionBuilder<TRequest> MapTicker<
             [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TFunction,
             TRequest>(string nameOverride = null)
             where TFunction : class, ITickerFunction<TRequest>

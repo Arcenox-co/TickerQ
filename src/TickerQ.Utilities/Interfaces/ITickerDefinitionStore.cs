@@ -12,6 +12,12 @@ namespace TickerQ.Utilities.Interfaces;
 /// </summary>
 public interface ITickerDefinitionStore
 {
+    /// <summary>
+    /// The most characters <see cref="SavedTickerDefinition.DefinitionJson"/> can hold, or null when it is unbounded,
+    /// such as Oracle's default NVARCHAR2(2000) column. Promise state is shortened to fit.
+    /// </summary>
+    int? MaxDefinitionJsonLength => null;
+
     Task<IReadOnlyList<SavedTickerDefinition>> ListDefinitionsAsync(
         SavedTickerDefinitionKind? kind = null,
         SavedTickerDefinitionTarget? target = null,

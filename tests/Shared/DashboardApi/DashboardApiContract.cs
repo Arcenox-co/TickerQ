@@ -6,8 +6,10 @@ using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using TickerQ.Dashboard;
 using TickerQ.DependencyInjection;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Entities;
 
 namespace TickerQ.Tests.Shared.DashboardApi;
 
@@ -857,15 +859,242 @@ public abstract class DashboardApiContract(IDashboardApiServer server)
         Assert.False(string.IsNullOrWhiteSpace(forbidden.GetProperty("error").GetString()));
         await node.SendAsync(HttpMethod.Post, $"{D}/cron-tickers", new { function, expression = "* * * * * *" }, HttpStatusCode.Forbidden);
         await node.SendAsync(HttpMethod.Post, $"{D}/schedule-policies", new { name = "blocked" }, HttpStatusCode.Forbidden);
+        // The license filter answers before the promise is looked up.
+        await node.SendAsync(HttpMethod.Post, $"{D}/promises/{Guid.NewGuid():N}/check", null, HttpStatusCode.Forbidden);
 
         Assert.Equal(0, (await node.PostAsync($"{D}/time-tickers/query", null)).GetProperty("totalCount").GetInt32());
         Assert.Equal(0, (await node.PostAsync($"{D}/cron-tickers/query", null)).GetProperty("totalCount").GetInt32());
         Assert.Equal(0, (await node.GetAsync($"{D}/schedule-policies")).GetArrayLength());
+        Assert.Equal(0, (await node.GetAsync($"{D}/promises")).GetArrayLength());
+    }
+
+    [DashboardApiFact]
+    public async Task Promise_IsCheckedOnSchedule_AndItsFindingsAreFixedDismissedAndSettledThroughTheApi()
+    {
+        var function = Unique("promise");
+        var rows = new PromiseRows();
+        var paid = DateTime.UtcNow.AddMinutes(-10);
+        foreach (var number in new[] { "A-1", "A-2", "A-3", "A-4", "A-5" })
+            rows.Add(number, paid);
+        rows.Add("A-6", paid, processed: true);   // done before any check
+        rows.Add("A-7", DateTime.UtcNow);         // not due for another minute
+        await using var node = await StartAsync(s =>
+            {
+                s.AddSingleton(rows);
+                s.MapTicker<PromiseOrderRequest>(function, (context, _) =>
+                    {
+                        // A-5's job succeeds but never updates the row: "job ran, row not updated".
+                        if (context.Request.OrderId != "A-5")
+                            rows.MarkProcessed(context.Request.OrderId);
+                        return Task.CompletedTask;
+                    })
+                    .Promise((PromiseRows source) => source.Query(), p => p
+                        .Within(TimeSpan.FromMinutes(1), after: o => o.PaidAt)
+                        .Job(o => new PromiseOrderRequest(o.Number), matchBy: r => r.OrderId)
+                        .DoneWhen(o => o.Processed)
+                        .Label(o => $"Order {o.Number}")
+                        .Named("Paid orders are processed"));
+            },
+            // One scheduled pass, at startup; everything after it is driven through the API. A row whose job just
+            // succeeded is reported at once, so the test need not wait out the grace.
+            tickerq: t => t.ConfigurePromises(p =>
+            {
+                p.CheckInterval = TimeSpan.FromHours(1);
+                p.RowUpdateGrace = TimeSpan.Zero;
+            }),
+            // Requests marked ?viewer are read-only, so one node serves both a manager and a viewer.
+            dashboard: d => d.SetReadOnly(c => c.Request.Query.ContainsKey("viewer")));
+
+        // The watcher's startup pass stores the first result, through the store under test.
+        await WaitUntilAsync(async () => (await node.GetAsync($"{D}/promises"))[0].GetProperty("checkedAtUtc").ValueKind
+            != JsonValueKind.Null, "the scheduled promise check");
+        var listed = (await node.GetAsync($"{D}/promises"))[0];
+        var id = listed.GetProperty("id").GetString()!;
+        var promise = $"{D}/promises/{id}";
+        Assert.Equal("Paid orders are processed", listed.GetProperty("name").GetString());
+        Assert.Equal(function, listed.GetProperty("function").GetString());
+        Assert.Equal("PromiseOrder", listed.GetProperty("rowType").GetString());
+        Assert.Equal("Code", listed.GetProperty("source").GetString());
+        Assert.True(listed.GetProperty("canManage").GetBoolean());
+        Assert.Equal($"Each PromiseOrder → {function} within 1 minute after PaidAt, done when Processed",
+            listed.GetProperty("summary").GetString());
+        Assert.Equal(5, Counts(listed).GetProperty("needsReview").GetInt32());
+        Assert.All(listed.GetProperty("findings").EnumerateArray(), f => Assert.Equal("NoJob", f.GetProperty("kind").GetString()));
+
+        // A-5 gets its job from the API; it succeeds without marking the row done.
+        var ranJob = await node.AddTimeTickerAsync(new
+        {
+            function, executionTime = DateTime.UtcNow, request = Request(new PromiseOrderRequest("A-5")),
+        });
+        await node.WaitForStatusAsync(ranJob, Succeeded);
+
+        var check = await node.PostAsync($"{promise}/check", null);
+        var counts = Counts(check);
+        Assert.Equal(JsonValueKind.Null, check.GetProperty("error").ValueKind);
+        Assert.False(check.GetProperty("truncated").GetBoolean());
+        Assert.Equal(6, counts.GetProperty("watched").GetInt32());
+        Assert.Equal(1, counts.GetProperty("done").GetInt32());
+        Assert.Equal(5, counts.GetProperty("needsReview").GetInt32());
+        Assert.Equal(0, counts.GetProperty("running").GetInt32());
+        Assert.Equal(0, counts.GetProperty("unmatchable").GetInt32());
+        foreach (var key in new[] { "A-1", "A-2", "A-3", "A-4" })
+        {
+            var neverScheduled = FindingFor(check, key);
+            Assert.Equal("NoJob", neverScheduled.GetProperty("kind").GetString());
+            Assert.Equal("NewJob", neverScheduled.GetProperty("fix").GetString());
+            Assert.Equal($"Order {key}", neverScheduled.GetProperty("label").GetString());
+        }
+        // The job's stored request was read back and matched to its row.
+        var notMarked = FindingFor(check, "A-5");
+        Assert.Equal("DoneButNotApplied", notMarked.GetProperty("kind").GetString());
+        Assert.Equal("None", notMarked.GetProperty("fix").GetString());
+        Assert.Equal(ranJob, notMarked.GetProperty("lastJob").GetProperty("id").GetGuid());
+
+        // Unknown promises are 404; a finding that is not there, or has no fix, is 409.
+        var unknown = $"{D}/promises/{Guid.NewGuid():N}";
+        await node.SendAsync(HttpMethod.Post, $"{unknown}/check", null, HttpStatusCode.NotFound);
+        await node.SendAsync(HttpMethod.Put, $"{unknown}/settings", new { paused = true }, HttpStatusCode.NotFound);
+        await node.SendAsync(HttpMethod.Post, $"{unknown}/findings/{Guid.NewGuid()}/fix", null, HttpStatusCode.NotFound);
+        await node.SendAsync(HttpMethod.Post, $"{unknown}/fix-all", null, HttpStatusCode.NotFound);
+        await node.SendAsync(HttpMethod.Post, $"{unknown}/findings/{Guid.NewGuid()}/dismiss", null, HttpStatusCode.NotFound);
+        await node.SendAsync(HttpMethod.Post, $"{promise}/findings/{Guid.NewGuid()}/fix", null, HttpStatusCode.Conflict);
+        await node.SendAsync(HttpMethod.Post, $"{promise}/findings/{Guid.NewGuid()}/dismiss", null, HttpStatusCode.Conflict);
+        await node.SendAsync(HttpMethod.Post, $"{promise}/findings/{FindingId(notMarked)}/fix", null, HttpStatusCode.Conflict);
+
+        // Settings: a time limit from the dashboard replaces the code's until it is reset with null.
+        var settings = await node.SendAsync(HttpMethod.Put, $"{promise}/settings", new { withinSeconds = 3600 }, HttpStatusCode.OK);
+        Assert.Equal(3600, settings.GetProperty("settings").GetProperty("withinSeconds").GetInt32());
+        Assert.Equal(60, settings.GetProperty("settings").GetProperty("withinSecondsFromCode").GetInt32());
+        Assert.Contains("within 1 hour after", settings.GetProperty("summary").GetString());
+        Assert.Equal(0, Counts(await node.PostAsync($"{promise}/check", null)).GetProperty("watched").GetInt32());
+        settings = await node.SendAsync(HttpMethod.Put, $"{promise}/settings", new { withinSeconds = (int?)null }, HttpStatusCode.OK);
+        Assert.Equal(JsonValueKind.Null, settings.GetProperty("settings").GetProperty("withinSeconds").ValueKind);
+        Assert.Equal(6, Counts(await node.PostAsync($"{promise}/check", null)).GetProperty("watched").GetInt32());
+
+        settings = await node.SendAsync(HttpMethod.Put, $"{promise}/settings", new { paused = true }, HttpStatusCode.OK);
+        Assert.True(settings.GetProperty("settings").GetProperty("paused").GetBoolean());
+        settings = await node.SendAsync(HttpMethod.Put, $"{promise}/settings", new { paused = false }, HttpStatusCode.OK);
+        Assert.False(settings.GetProperty("settings").GetProperty("paused").GetBoolean());
+        settings = await node.SendAsync(HttpMethod.Put, $"{promise}/settings", new { autoFix = true }, HttpStatusCode.OK);
+        Assert.True(settings.GetProperty("autoFix").GetProperty("enabled").GetBoolean());
+        Assert.False(settings.GetProperty("autoFix").GetProperty("fromCode").GetBoolean());
+        settings = await node.SendAsync(HttpMethod.Put, $"{promise}/settings", new { autoFix = (bool?)null }, HttpStatusCode.OK);
+        Assert.False(settings.GetProperty("autoFix").GetProperty("enabled").GetBoolean());
+        Assert.Contains(settings.GetProperty("activity").EnumerateArray(),
+            a => a.GetProperty("kind").GetString() == "settings" && a.GetProperty("text").GetString()!.Contains("disabled the promise"));
+        await node.SendAsync(HttpMethod.Put, $"{promise}/settings", new { withinSeconds = 0 }, HttpStatusCode.BadRequest);
+        await node.SendAsync(HttpMethod.Put, $"{promise}/settings", new { paused = "yes" }, HttpStatusCode.BadRequest);
+        await node.SendAsync(HttpMethod.Put, $"{promise}/settings", null, HttpStatusCode.BadRequest);
+
+        // Fix: one job with the row's request; running it again finds nothing left to fix.
+        var a1 = FindingId(FindingFor(await node.PostAsync($"{promise}/check", null), "A-1"));
+        var fix = await node.PostAsync($"{promise}/findings/{a1}/fix", null);
+        Assert.Equal("NewJob", fix.GetProperty("fix").GetString());
+        var fixJob = fix.GetProperty("jobId").GetGuid();
+        Assert.DoesNotContain(fix.GetProperty("promise").GetProperty("findings").EnumerateArray(),
+            f => f.GetProperty("key").GetString() == "A-1");
+        Assert.StartsWith("Promise fix · Paid orders are processed · Order A-1",
+            (await node.GetAsync($"{D}/time-tickers/{fixJob}")).GetProperty("description").GetString());
+        Assert.Equal(new PromiseOrderRequest("A-1"),
+            Decode<PromiseOrderRequest>((await node.GetAsync($"{D}/time-tickers/{fixJob}/request")).GetProperty("payload")));
+        await node.SendAsync(HttpMethod.Post, $"{promise}/findings/{a1}/fix", null, HttpStatusCode.Conflict);
+        Assert.Equal(2, (await node.PostAsync($"{D}/time-tickers/query", new { functionName = function }))
+            .GetProperty("totalCount").GetInt32());
+        await node.WaitForStatusAsync(fixJob, Succeeded);
+
+        // Dismiss: kept with who and why, and left out of "fix all".
+        var a4 = FindingId(FindingFor(await node.PostAsync($"{promise}/check", null), "A-4"));
+        var dismissed = await node.SendAsync(HttpMethod.Post, $"{promise}/findings/{a4}/dismiss",
+            new { reason = "test order" }, HttpStatusCode.OK);
+        var dismissal = FindingFor(dismissed, "A-4").GetProperty("dismissed");
+        Assert.Equal("test order", dismissal.GetProperty("reason").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(dismissal.GetProperty("by").GetString()));
+        Assert.Equal(1, Counts(dismissed).GetProperty("dismissed").GetInt32());
+
+        var fixAll = await node.PostAsync($"{promise}/fix-all", null);
+        Assert.Equal(2, fixAll.GetProperty("fixed").GetInt32());
+        Assert.Equal(0, fixAll.GetProperty("failed").GetInt32());
+        Assert.Equal(0, fixAll.GetProperty("remaining").GetInt32());
+        // A-5's own job, A-1's fix and the two from "fix all".
+        Assert.Equal(4, (await node.PostAsync($"{D}/time-tickers/query", new { functionName = function }))
+            .GetProperty("totalCount").GetInt32());
+        await WaitUntilAsync(() => Task.FromResult(rows.IsProcessed("A-2") && rows.IsProcessed("A-3")), "the fix-all jobs to run");
+
+        var settled = await node.PostAsync($"{promise}/check", null);
+        Assert.True(settled.GetProperty("error").ValueKind == JsonValueKind.Null, settled.GetProperty("error").ToString());
+        counts = Counts(settled);
+        Assert.Equal(4, counts.GetProperty("done").GetInt32());
+        Assert.Equal(1, counts.GetProperty("needsReview").GetInt32());
+        Assert.Equal(1, counts.GetProperty("dismissed").GetInt32());
+        Assert.Equal(new[] { "A-4", "A-5" }, settled.GetProperty("findings").EnumerateArray()
+            .Select(f => f.GetProperty("key").GetString()).Order());
+        Assert.NotEqual(JsonValueKind.Null, FindingFor(settled, "A-4").GetProperty("dismissed").ValueKind);
+
+        // A viewer reads the promise but cannot change it.
+        Assert.False((await node.GetAsync($"{D}/promises?viewer=1"))[0].GetProperty("canManage").GetBoolean());
+        await node.SendAsync(HttpMethod.Post, $"{promise}/check?viewer=1", null, HttpStatusCode.Forbidden);
+        await node.SendAsync(HttpMethod.Put, $"{promise}/settings?viewer=1", new { paused = true }, HttpStatusCode.Forbidden);
+        await node.SendAsync(HttpMethod.Post, $"{promise}/findings/{a4}/fix?viewer=1", null, HttpStatusCode.Forbidden);
+        await node.SendAsync(HttpMethod.Post, $"{promise}/fix-all?viewer=1", null, HttpStatusCode.Forbidden);
+        await node.SendAsync(HttpMethod.Post, $"{promise}/findings/{a4}/dismiss?viewer=1", null, HttpStatusCode.Forbidden);
+
+        // The promise's state has its own table; the saved-work routes know nothing of it.
+        var row = Guid.Parse(id);
+        Assert.DoesNotContain(row, Ids(await node.GetAsync($"{D}/definitions")));
+        Assert.Equal(0, (await node.GetAsync($"{D}/definitions?kind=Promise")).GetArrayLength());
+        await node.SendAsync(HttpMethod.Get, $"{D}/definitions/{row}", null, HttpStatusCode.NotFound);
+        await node.SendAsync(HttpMethod.Put, $"{D}/definitions/{row}", new
+        {
+            kind = "Draft", target = "TimeTicker", name = "overwrite", version = 1,
+            payload = new { executionTime = DateTime.UtcNow, root = new { function } },
+        }, HttpStatusCode.NotFound);
+        await node.SendAsync(HttpMethod.Post, $"{D}/definitions/{row}/activate", new { version = 1 }, HttpStatusCode.NotFound);
+        await node.SendAsync(HttpMethod.Delete, $"{D}/definitions/{row}?version=1", null, HttpStatusCode.NotFound);
+        await node.SendAsync(HttpMethod.Post, $"{D}/definitions", new
+        {
+            kind = "Promise", target = "TimeTicker", name = "forged",
+            payload = new { executionTime = DateTime.UtcNow, root = new { function } },
+        }, HttpStatusCode.BadRequest);
+        Assert.Equal("Paid orders are processed", (await node.GetAsync($"{D}/promises"))[0].GetProperty("name").GetString());
     }
 
     private sealed record Order(string Name, int Quantity);
 
     private sealed record Receipt(string Name, int Total);
+
+    public sealed record PromiseOrderRequest(string OrderId);
+
+    public sealed class PromiseOrder
+    {
+        public string Number { get; init; }
+        public DateTime? PaidAt { get; init; }
+        public bool Processed { get; set; }
+    }
+
+    /// <summary>The application's rows for the promise test: an in-memory table, the same on every provider.</summary>
+    public sealed class PromiseRows
+    {
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, PromiseOrder> _orders = new();
+
+        public void Add(string number, DateTime paidAt, bool processed = false)
+            => _orders[number] = new PromiseOrder { Number = number, PaidAt = paidAt, Processed = processed };
+
+        public void MarkProcessed(string number) => _orders[number].Processed = true;
+
+        public bool IsProcessed(string number) => _orders[number].Processed;
+
+        // A snapshot, so a job marking a row while a check reads cannot change the rows mid-query.
+        public IQueryable<PromiseOrder> Query() => _orders.Values
+            .Select(o => new PromiseOrder { Number = o.Number, PaidAt = o.PaidAt, Processed = o.Processed })
+            .ToList().AsQueryable();
+    }
+
+    private static JsonElement Counts(JsonElement promise) => promise.GetProperty("counts");
+
+    private static JsonElement FindingFor(JsonElement promise, string key)
+        => promise.GetProperty("findings").EnumerateArray().Single(f => f.GetProperty("key").GetString() == key);
+
+    private static Guid FindingId(JsonElement finding) => finding.GetProperty("id").GetGuid();
 
     // A job that starts after its due time finishes as DueDone, which is still a success.
     private static readonly string[] Succeeded = ["Done", "DueDone"];
@@ -876,7 +1105,9 @@ public abstract class DashboardApiContract(IDashboardApiServer server)
     // PascalCase names, so a request is sent in the shape the function will read it in.
     private static string Request<T>(T value) => JsonSerializer.Serialize(value);
 
-    private async Task<ApiNode> StartAsync(Action<IServiceCollection> services, bool activeLicense = true)
+    private async Task<ApiNode> StartAsync(Action<IServiceCollection> services, bool activeLicense = true,
+        Action<TickerOptionsBuilder<TimeTickerEntity, CronTickerEntity>> tickerq = null,
+        Action<DashboardOptionsBuilder> dashboard = null)
     {
         var store = await server.CreateStoreAsync();
         try
@@ -886,6 +1117,8 @@ public abstract class DashboardApiContract(IDashboardApiServer server)
                 ActiveLicense = activeLicense,
                 Services = services,
                 Scheduler = scheduler => scheduler.FallbackIntervalChecker = TimeSpan.FromSeconds(2),
+                TickerQ = tickerq,
+                Dashboard = dashboard,
             });
             return new ApiNode(app, store);
         }

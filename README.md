@@ -44,6 +44,7 @@
 - **Build complete workflows.** Connect jobs with conditional steps, pass results between them, and schedule a fresh chain for every recurring run.
 - **Keep execution under control.** Set retries, priorities, per-host function concurrency, and cron overlap policies. Cancel pending work or request cooperative cancellation of a running job.
 - **Respect business calendars.** Reuse named, time-zone-aware schedule policies for work hours, closure dates, holidays, cron schedules, and one-time jobs.
+- **Catch work that never happened.** Promise in code that every row of a query, such as every paid order, gets a successful job within a time limit. TickerQ lists the rows that were never scheduled or never ran, for a person to fix or dismiss, or schedules them automatically. [Read the promises guide →](docs/promises.md)
 - **Control late work explicitly.** Run persisted work once, skip it after a per-job grace window, or catch up only the latest eligible cron slot after downtime.
 - **Commit jobs with business data.** Stage time jobs and cron schedules in the same EF Core transaction as your application changes.
 - **Choose your storage.** Use EF Core, MongoDB, or Redis for persistence, with in-memory storage for development.

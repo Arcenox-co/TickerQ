@@ -663,6 +663,38 @@ namespace TickerQ.Sample.Console.Migrations
                     b.ToTable("TickerQNodes", "ticker");
                 });
 
+            modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.TickerQPromiseEntity", b =>
+                {
+                    b.Property<string>("ApplicationNamespaceKey")
+                        .HasMaxLength(80)
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("StateJson")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("Version")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("ApplicationNamespaceKey", "Id");
+
+                    b.ToTable("TickerQPromises", "ticker");
+                });
+
             modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.TickerQStoreMetadata", b =>
                 {
                     b.Property<string>("ApplicationNamespaceKey")

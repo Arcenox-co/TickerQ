@@ -12,6 +12,7 @@ using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Models;
+using TickerQ.Utilities.Promises;
 
 namespace TickerQ.Utilities
 {
@@ -154,6 +155,20 @@ namespace TickerQ.Utilities
         {
             configure?.Invoke(JobRetention);
             JobRetention.Validate();
+            return this;
+        }
+
+        /// <summary>How promises are checked, and the promises declared here. Never null.</summary>
+        public TickerPromiseOptions Promises { get; } = new TickerPromiseOptions();
+
+        /// <summary>
+        /// Sets how promises are checked, and declares promises for functions without a typed MapTicker
+        /// registration, such as <c>p.For(TickerFunctions.Billing.SendInvoice, (ShopDb db) =&gt; db.Invoices, ...)</c>.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> ConfigurePromises(Action<TickerPromiseOptions> configure)
+        {
+            configure?.Invoke(Promises);
+            Promises.Validate();
             return this;
         }
 
